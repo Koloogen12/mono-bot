@@ -186,20 +186,14 @@ def kb_main() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         resize_keyboard=True,
         keyboard=[
-            [
-                KeyboardButton(text="🛠 Я – Фабрика"),
-                KeyboardButton(text="🛒 Мне нужна фабрика"),
-            ],
-            [KeyboardButton(text="ℹ Как работает"), KeyboardButton(text="🧾 Тарифы")],
+            [KeyboardButton("🛠 Я – Фабрика"), KeyboardButton("🛒 Мне нужна фабрика")],
+            [KeyboardButton("ℹ Как работает"), KeyboardButton("🧾 Тарифы")],
         ],
     )
 
 
 def kb_factory_menu() -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        resize_keyboard=True,
-        keyboard=[[KeyboardButton(text="📂 Заявки"), KeyboardButton(text="🧾 Профиль")]],
-    )
+    return ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[[KeyboardButton("📂 Заявки"), KeyboardButton("🧾 Профиль")]])
 
 
 def parse_digits(text: str) -> int | None:
@@ -219,9 +213,7 @@ def order_caption(row: sqlite3.Row) -> str:
 
 
 def send_order_card(chat_id: int, row: sqlite3.Row) -> None:
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Откликнуться", callback_data=f"lead:{row['id']}")]]
-    )
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton("Откликнуться", callback_data=f"lead:{row['id']}")]])
     asyncio.create_task(bot.send_message(chat_id, order_caption(row), reply_markup=kb))
 
 # ---------------------------------------------------------------------------
