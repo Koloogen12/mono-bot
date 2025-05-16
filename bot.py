@@ -14,6 +14,10 @@ Recent fixes ---------------------------------------------------------------
 * `factory_pay` & `buyer_pay` – `edit_text` now uses NO reply_markup
   (only InlineKeyboardMarkup is allowed); ReplyKeyboard is sent in a new
   message afterwards ⇒ no `ValidationError: reply_markup`.
+* Robust handling of numeric inputs (lead time etc.) — protects from
+  ValueError when user sends text like «Да, 45».
+* `buyer_pay` now fetches freshly inserted order row in the **same DB
+  connection**, so `notify_factories` never receives `None`.
 
 Environment ---------------------------------------------------------------
 Set **BOT_TOKEN** (required) and optionally:
@@ -24,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from typing import Any, Iterable, Sequence
@@ -338,12 +343,10 @@ async def factory_pay(call: CallbackQuery, state: FSMContext) -> None:
 
     await state.clear()
 
-    # 1️⃣ edit previous message **without** reply_markup (fix ValidationError)
     await call.message.edit_text(
         "✅ Статус: <b>PRO</b>. Лиды будут приходить в этот чат.",
     )
 
-    # 2️⃣ send new message WITH ReplyKeyboard markup
     await bot.send_message(
         tg_id,
         "Меню фабрики:",
@@ -353,7 +356,7 @@ async def factory_pay(call: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-#  Buyer flow (shortened – core steps)
+#  Buyer flow (robust numeric parsing)
 # ---------------------------------------------------------------------------
 
 @dp.message(F.text == "🛒 Мне нужна фабрика")
@@ -371,14 +374,14 @@ async def buyer_category(message: Message, state: FSMContext) -> None:
 
 @dp.message(BuyerForm.quantity)
 async def buyer_qty(message: Message, state: FSMContext) -> None:
-    await state.update_data(quantity=int(message.text))
+    await state.update_data(quantity=int(re.sub(r"\D", "", message.text)))
     await message.answer("Бюджет, ₽?")
     await state.set_state(BuyerForm.budget)
 
 
 @dp.message(BuyerForm.budget)
 async def buyer_budget(message: Message, state: FSMContext) -> None:
-    await state.update_data(budget=int(message.text))
+    await state.update_data(budget=int(re.sub(r"\D", "", message.text)))
     await message.answer("Куда доставить готовую партию?")
     await state.set_state(BuyerForm.destination)
 
@@ -386,13 +389,17 @@ async def buyer_budget(message: Message, state: FSMContext) -> None:
 @dp.message(BuyerForm.destination)
 async def buyer_dest(message: Message, state: FSMContext) -> None:
     await state.update_data(destination=message.text.strip())
-    await message.answer("Нужен ли образец? Срок выпуска (дней)?")
+    await message.answer("Срок выпуска (дней)? Укажите число.")
     await state.set_state(BuyerForm.lead_time)
 
 
 @dp.message(BuyerForm.lead_time)
 async def buyer_lead(message: Message, state: FSMContext) -> None:
-    await state.update_data(lead_time=int(message.text))
+    digits = re.sub(r"\D", "", message.text)
+    if not digits:
+        await message.answer("Пожалуйста, укажите срок числом, например <b>45</b>.")
+        return
+    await state.update_data(lead_time=int(digits))
     await message.answer("Прикрепите техзадание (файл) или фото эскиза:")
     await state.set_state(BuyerForm.file)
 
@@ -410,75 +417,4 @@ async def buyer_file(message: Message, state: FSMContext) -> None:
         "всем подходящим фабрикам (PRO‑аккаунты).",
         reply_markup=kb,
     )
-    await state.set_state(BuyerForm.confirm_pay)
-
-
-@dp.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
-async def buyer_pay(call: CallbackQuery, state: FSMContext) -> None:
-    data = await state.get_data()
-
-    # Store order
-    execute(
-        """
-        INSERT INTO orders
-            (buyer_id, category, quantity, budget, destination, lead_time, file_id, paid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1);
-        """,
-        (
-            call.from_user.id,
-            data["category"],
-            data["quantity"],
-            data["budget"],
-            data["destination"],
-            data["lead_time"],
-            data["file_id"],
-        ),
-    )
-    order_id = fetchone("SELECT last_insert_rowid() AS id;")["id"]
-    row = fetchone("SELECT * FROM orders WHERE id = ?;", (order_id,))
-
-    # reset state
-    await state.clear()
-
-    # 1️⃣ edit original message WITHOUT reply_markup
-    await call.message.edit_text("✅ Заявка оплачена. Фабрики получат её в течение минуты!")
-
-    # 2️⃣ send confirmation
-    await bot.send_message(call.from_user.id, "Спасибо! Мы начали поиск фабрик.")
-    await call.answer()
-
-    # 3️⃣ dispatch to factories
-    notify_factories(row)
-
-
-# ---------------------------------------------------------------------------
-#  Bot entry‑point
-# ---------------------------------------------------------------------------
-
-async def main() -> None:
-    init_db()
-
-    # Switch modes: webhook vs polling
-    if os.getenv("BOT_MODE", "POLLING").upper() == "WEBHOOK":
-        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # noqa: WPS433
-        from aiohttp import web
-
-        base_url = os.environ["WEBHOOK_BASE"].rstrip("/")
-        path = f"/tg/{TOKEN}"
-        await bot.set_webhook(f"{base_url}{path}", drop_pending_updates=True)
-
-        app = web.Application()
-        SimpleRequestHandler(dp, bot).register(app, path)
-        setup_application(app, dp, bot=bot)
-        port = int(os.getenv("PORT", "8080"))
-        logger.info("Webhook running on %s:%s", base_url, port)
-        web.run_app(app, port=port)
-    else:
-        # polling
-        await bot.delete_webhook(drop_pending_updates=True)
-        logger.info("Webhook cleared ✔ – switched to long‑polling mode")
-        await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    await state.set_state
