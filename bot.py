@@ -252,31 +252,49 @@ class TrackingForm(StatesGroup):
 
 def kb_main() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        resize_keyboard=True,
         keyboard=[
-            [KeyboardButton("🛠 Я – Фабрика"), KeyboardButton("🛒 Мне нужна фабрика")],
-            [KeyboardButton("ℹ Как работает"), KeyboardButton("🧾 Тарифы")],
+            [
+                KeyboardButton(text="🛠 Я – Фабрика"), 
+                KeyboardButton(text="🛒 Мне нужна фабрика")
+            ],
+            [
+                KeyboardButton(text="ℹ Как работает"), 
+                KeyboardButton(text="🧾 Тарифы")
+            ],
         ],
+        resize_keyboard=True,
     )
 
 
 def kb_factory_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        resize_keyboard=True,
         keyboard=[
-            [KeyboardButton("📂 Заявки"), KeyboardButton("🧾 Профиль")],
-            [KeyboardButton("⏱ Статус заказов"), KeyboardButton("⭐ Рейтинг")],
-        ]
+            [
+                KeyboardButton(text="📂 Заявки"), 
+                KeyboardButton(text="🧾 Профиль")
+            ],
+            [
+                KeyboardButton(text="⏱ Статус заказов"), 
+                KeyboardButton(text="⭐ Рейтинг")
+            ],
+        ],
+        resize_keyboard=True,
     )
 
 
 def kb_buyer_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
-        resize_keyboard=True,
         keyboard=[
-            [KeyboardButton("📋 Мои заказы"), KeyboardButton("🧾 Профиль")],
-            [KeyboardButton("⏱ Статус заказов"), KeyboardButton("🔄 Новый заказ")],
-        ]
+            [
+                KeyboardButton(text="📋 Мои заказы"), 
+                KeyboardButton(text="🧾 Профиль")
+            ],
+            [
+                KeyboardButton(text="⏱ Статус заказов"), 
+                KeyboardButton(text="🔄 Новый заказ")
+            ],
+        ],
+        resize_keyboard=True,
     )
 
 
@@ -297,7 +315,14 @@ def order_caption(row: sqlite3.Row) -> str:
 
 
 def send_order_card(chat_id: int, row: sqlite3.Row) -> None:
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton("Откликнуться", callback_data=f"lead:{row['id']}")]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="Откликнуться", 
+                callback_data=f"lead:{row['id']}"
+            )
+        ]]
+    )
     asyncio.create_task(bot.send_message(chat_id, order_caption(row), reply_markup=kb))
 
 
@@ -331,7 +356,6 @@ def status_caption(deal: sqlite3.Row) -> str:
         caption += f"\nETA: {deal['eta']}"
     
     return caption
-
 # ---------------------------------------------------------------------------
 #  Lead dispatch & listings
 # ---------------------------------------------------------------------------
@@ -489,7 +513,6 @@ async def cmd_rating(msg: Message) -> None:
                 "Вы пока не оставляли отзывов о фабриках.",
                 reply_markup=kb_buyer_menu() if q1("SELECT 1 FROM orders WHERE buyer_id=?", (msg.from_user.id,)) else kb_main(),
             )
-
 # ---------------------------------------------------------------------------
 #  Factory onboarding
 # ---------------------------------------------------------------------------
@@ -573,7 +596,14 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
         await state.update_data(name=f"Фабрика_{msg.from_user.id}", portfolio="")
     
     data = await state.get_data()
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton("Оплатить 2 000 ₽", callback_data="pay_factory")]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="Оплатить 2 000 ₽", 
+                callback_data="pay_factory"
+            )
+        ]]
+    )
     await state.set_state(FactoryForm.confirm_pay)
     await msg.answer(
         "Почти готово! Оплатите PRO‑подписку, чтобы получать заявки:", reply_markup=kb
@@ -679,7 +709,14 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     else:
         await msg.answer("Пришлите файл/фото или «skip»:")
         return
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton("Оплатить 700 ₽", callback_data="pay_order")]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[
+            InlineKeyboardButton(
+                text="Оплатить 700 ₽", 
+                callback_data="pay_order"
+            )
+        ]]
+    )
     await state.set_state(BuyerForm.confirm_pay)
     await msg.answer("Оплатите размещение заявки:", reply_markup=kb)
 
@@ -721,7 +758,6 @@ async def buyer_pay(call: CallbackQuery, state: FSMContext) -> None:
         notify_factories(order_row)
     
     await call.answer()
-
 
 # ---------------------------------------------------------------------
 # Orders for buyers
@@ -875,7 +911,10 @@ async def proposal_sample_cost(msg: Message, state: FSMContext) -> None:
     
     kb = InlineKeyboardMarkup(
         inline_keyboard=[[
-            InlineKeyboardButton(text="Да", callback_data=f"confirm_proposal:{data['order_id']}:{data['price']}:{data['lead_time']}:{cost}")
+            InlineKeyboardButton(
+                text="Да", 
+                callback_data=f"confirm_proposal:{data['order_id']}:{data['price']}:{data['lead_time']}:{cost}"
+            )
         ]]
     )
     
@@ -944,7 +983,6 @@ async def confirm_proposal(call: CallbackQuery) -> None:
     except Exception as e:
         logger.error("Error sending proposal: %s", e)
         await call.answer("Ошибка при отправке предложения", show_alert=True)
-
 
 # ---------------------------------------------------------------------
 # Deal management
