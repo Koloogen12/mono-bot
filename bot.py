@@ -687,42 +687,33 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
 @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
 async def buyer_pay(call: CallbackQuery, state: FSMContext) -> None:
     data = await state.get_data()
-
-    # Открываем соединение с БД
-    with sqlite3.connect("db.sqlite3") as conn:
-        cursor = conn.cursor()
-
-        # Добавляем заказ и получаем ID
-        order_id = insert_and_get_id(
-            """INSERT INTO orders
+    with sqlite3.connect(data = await state.get_data()
+    order_id = insert_and_get_id(
+        """INSERT INTO orders
                 (buyer_id, category, quantity, budget, destination, lead_time, file_id, paid)
-               VALUES (?, ?, ?, ?, ?, ?, ?, 1);""",
-            (
-                call.from_user.id,
-                data["category"],
-                data["quantity"],
-                data["budget"],
-                data["destination"],
-                data["lead_time"],
-                data.get("file_id"),
-            ),
-            cursor
-        )
-        conn.commit()
-
+            VALUES(?, ?, ?, ?, ?, ?, ?, 1);""",
+        (
+            call.from_user.id,
+            data["category"],
+            data["quantity"],
+            data["budget"],
+            data["destination"],
+            data["lead_time"],
+            data.get("file_id"),
+        ),
+    )
     await state.clear()
-
-    # Получаем заказ для рассылки
+    
+    # Get order details for notification
     order = q1("SELECT * FROM orders WHERE id=?", (order_id,))
-
-    # Рассылаем фабрикам
+    
+    # Notify matching factories about new order
     notify_factories(order)
-
-    # Подтверждение заказчику
+    
+    # Send confirmation to buyer
     await call.message.edit_text(f"👍 Заявка #Z-{order_id} создана! Ожидайте первые предложения в течение 24 ч.")
     await bot.send_message(call.from_user.id, "Меню заказчика:", reply_markup=kb_buyer_menu())
     await call.answer()
-
 
 
 # ---------------------------------------------------------------------------
