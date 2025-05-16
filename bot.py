@@ -9,7 +9,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import F
 import asyncio
 
-TOKEN = os.getenv("7872394424:AAGwGb-oSmM31NAEg-NG5uZEiPauFhQTSXo")
+TOKEN = os.getenv("BOT_TOKEN")
 bot = Bot(token=TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
