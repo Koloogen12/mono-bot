@@ -1,14 +1,14 @@
 """Mono‑Fabrique Telegram bot — MVP
 =================================================
 Telegram bot that connects garment factories («Фабрика») with buyers («Заказчик»).
-Single‑file implementation (~650 sloc) based on **aiogram 3.4+** with no extra
-runtime deps. Supports both long‑polling (default) and webhook mode.
+Single‑file implementation (~660 sloc) based on **aiogram 3.4+** with no extra
+runtime deps. Works in *long‑polling* (default) or *webhook* mode.
 
-Main flows
-----------
+Major flows
+-----------
 * Factory onboarding → PRO subscription (₂ 000 ₽ stub‑payment)
 * Buyer creates order → payment (₇ 00 ₽) → instant dispatch to matching
-  PRO‑factories
+  PRO‑factories (by category, min_qty, ⩽ budget)
 * Factories view «📂 Заявки», send price / lead‑time / sample‑cost; buyer gets
   proposal cards
 * Profiles, history, `/help`, SQLite persistence
@@ -36,13 +36,20 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (CallbackQuery, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from aiogram.webhook.aiohttp_server import (
+    SimpleRequestHandler,
+    setup_application,
+)
 from aiohttp import web
 
 try:
-    # Optional for local dev
+    # optional for local dev
     from dotenv import load_dotenv
 
     load_dotenv()
@@ -142,6 +149,7 @@ def execute(sql: str, params: Iterable[Any] | None = None) -> None:
 #  FSM definitions
 # ---------------------------------------------------------------------------
 
+
 class FactoryForm(StatesGroup):
     inn = State()
     photos = State()
@@ -171,11 +179,15 @@ class ProposalForm(StatesGroup):
 #  UI helpers
 # ---------------------------------------------------------------------------
 
+
 def build_factory_menu() -> types.ReplyKeyboardMarkup:
     return types.ReplyKeyboardMarkup(
         resize_keyboard=True,
         keyboard=[
-            [types.KeyboardButton(text="📂 Заявки"), types.KeyboardButton(text="🧾 Профиль")],
+            [
+                types.KeyboardButton(text="📂 Заявки"),
+                types.KeyboardButton(text="🧾 Профиль"),
+            ],
             [types.KeyboardButton(text="/help")],
         ],
     )
@@ -189,20 +201,28 @@ def send_order_card(chat_id: int, row: sqlite3.Row) -> None:
         f"<b>Заявка #Z‑{row['id']}</b>\n"
         f"Категория: {row['category']}\n"
         f"Тираж: {row['quantity']} шт.\n"
-        f"Бюджет: {row['budget']} ₽\n"
-        f"Срок: {row['lead_time']} дн."\
+        f"Бюджет: {row['budget']} ₽ за ед.\n"
+        f"Срок: {row['lead_time']} дн.\n"
+        f"Город: {row['destination']}"
     )
     asyncio.create_task(bot.send_message(chat_id, caption, reply_markup=kb))
 
 
+# ---------------------------------------------------------------------------
+#  Lead dispatching
+# ---------------------------------------------------------------------------
+
+
 def notify_factories(order_row: sqlite3.Row) -> None:
+    """Push new order to all suitable PRO‑factories."""
     factories = fetchall(
         """
         SELECT tg_id FROM factories
          WHERE is_pro = 1
-           AND (',' || categories || ',') LIKE ('%,' || ? || ',%')
-           AND min_qty <= ?;""",
-        (order_row["category"], order_row["quantity"]),
+           AND min_qty <= ?
+           AND avg_price <= ?
+           AND (',' || categories || ',') LIKE ('%,' || ? || ',%');""",
+        (order_row["quantity"], order_row["budget"], order_row["category"]),
     )
     logger.info("Dispatch lead %s → %d factories", order_row["id"], len(factories))
     for f in factories:
@@ -211,6 +231,7 @@ def notify_factories(order_row: sqlite3.Row) -> None:
 # ---------------------------------------------------------------------------
 #  Common commands
 # ---------------------------------------------------------------------------
+
 
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext) -> None:
@@ -234,6 +255,7 @@ async def cmd_profile(message: Message) -> None:
             f"<b>Профиль фабрики</b>\n"
             f"Категории: {row['categories']}\n"
             f"Мин.тираж: {row['min_qty']} шт.\n"
+            f"Средняя цена: {row['avg_price']}₽\n"
             f"PRO: {'✅' if row['is_pro'] else '—'}"
         )
     else:
