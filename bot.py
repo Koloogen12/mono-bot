@@ -417,4 +417,4 @@ async def buyer_file(message: Message, state: FSMContext) -> None:
         "всем подходящим фабрикам (PRO‑аккаунты).",
         reply_markup=kb,
     )
-    await state.set_state
+    await state.set_state(BuyerForm.confirm_pay)
