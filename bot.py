@@ -1,18 +1,23 @@
 """Mono‑Fabrique Telegram bot — MVP
 =================================================
 Telegram bot connecting garment factories («Фабрика») with buyers («Заказчик»).
-Single‑file build based on **aiogram 3** ready for Render/Fly deploy.
+Single‑file implementation based on **aiogram 3** ready for Render/Fly deploy.
 
 Key user‑flows ---------------------------------------------------------------
-* Factory onboarding ➜ PRO subscription (₽2 000 stub‑payment)
-* Buyer request ➜ payment (₽700) ➜ auto‑dispatch to matching factories
-* "📂 Заявки" menu for factories with instant respond
-* Proposal flow and SQLite persistence
+* Factory onboarding ➜ PRO subscription (₂ 000 ₽ stub payment)
+* Buyer request ➜ payment (₇ 00 ₽) ➜ auto‑dispatch to matching factories
+* "📂 Заявки" menu for factories + instant respond flow
+* SQLite persistence (factories, orders, proposals)
 
-This version fixes `ValidationError: reply_markup` raised on callback
-`pay_factory` (aiogram-3 requires InlineKeyboardMarkup for edit_text). Now we
-edit the original message **without** keyboard and then send a new chat
-message with the factory menu (ReplyKeyboardMarkup).
+Recent fixes ---------------------------------------------------------------
+* Optional import of `python-dotenv` ⇒ no `ModuleNotFoundError` in prod
+* `factory_pay` & `buyer_pay` – `edit_text` now uses NO reply_markup
+  (only InlineKeyboardMarkup is allowed); ReplyKeyboard is sent in a new
+  message afterwards ⇒ no `ValidationError: reply_markup`.
+
+Environment ---------------------------------------------------------------
+Set **BOT_TOKEN** (required) and optionally:
+* `BOT_MODE=WEBHOOK`, `WEBHOOK_BASE=https://<your-host>` for webhook mode.
 """
 from __future__ import annotations
 
@@ -29,20 +34,32 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (CallbackQuery, InlineKeyboardButton,
-                           InlineKeyboardMarkup, Message)
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 # ---------------------------------------------------------------------------
 #  Config & bootstrap
 # ---------------------------------------------------------------------------
-from dotenv import load_dotenv
-load_dotenv()
+try:
+    from dotenv import load_dotenv  # type: ignore
+
+    load_dotenv()
+except ModuleNotFoundError:
+    # In production we don't require python‑dotenv; ignore if absent.
+    pass
+
 TOKEN = os.getenv("BOT_TOKEN", "").strip()
 if not TOKEN:
-    raise RuntimeError("Environment variable BOT_TOKEN is missing.")
+    raise RuntimeError("Environment variable BOT_TOKEN is missing (BOT_TOKEN).")
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(levelname)s:%(name)s:%(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(levelname)s:%(name)s:%(message)s",
+)
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=TOKEN, parse_mode=ParseMode.HTML)
@@ -56,7 +73,8 @@ DB_PATH = "fabrique.db"
 def init_db() -> None:
     """Ensure SQLite schema exists."""
     with sqlite3.connect(DB_PATH) as db:
-        db.execute("""
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS factories (
                 tg_id      INTEGER PRIMARY KEY,
                 name       TEXT,
@@ -68,8 +86,10 @@ def init_db() -> None:
                 is_pro     INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
-        db.execute("""
+            """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS orders (
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 buyer_id    INTEGER,
@@ -82,8 +102,10 @@ def init_db() -> None:
                 paid        INTEGER DEFAULT 0,
                 created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
-        """)
-        db.execute("""
+            """
+        )
+        db.execute(
+            """
             CREATE TABLE IF NOT EXISTS proposals (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id     INTEGER,
@@ -95,7 +117,8 @@ def init_db() -> None:
                 FOREIGN KEY(order_id)  REFERENCES orders(id),
                 FOREIGN KEY(factory_id) REFERENCES factories(tg_id)
             );
-        """)
+            """
+        )
     logger.info("SQLite schema ensured ✔")
 
 
@@ -117,6 +140,7 @@ def execute(sql: str, params: Iterable[Any] | None = None) -> None:
     with sqlite3.connect(DB_PATH) as db:
         db.execute(sql, params or [])
         db.commit()
+
 
 # ---------------------------------------------------------------------------
 #  FSM definitions
@@ -148,56 +172,75 @@ class ProposalForm(StatesGroup):
     sample_cost = State()
     confirm = State()
 
+
 # ---------------------------------------------------------------------------
 #  Utility helpers
 # ---------------------------------------------------------------------------
 
 def build_factory_menu() -> types.ReplyKeyboardMarkup:
-    return types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [types.KeyboardButton(text="📂 Заявки"), types.KeyboardButton(text="/profile")],
-        [types.KeyboardButton(text="/myleads")],
-    ])
+    return types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        keyboard=[
+            [types.KeyboardButton(text="📂 Заявки"), types.KeyboardButton(text="/profile")],
+            [types.KeyboardButton(text="/myleads")],
+        ],
+    )
 
 
 def send_order_card(factory_tg: int, order_row: sqlite3.Row) -> None:
     """Push single order card with inline buttons to a factory chat."""
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-        text="Откликнуться",
-        callback_data=f"lead:{order_row['id']}")]])
-    asyncio.create_task(bot.send_message(
-        factory_tg,
-        (f"🆕 Заявка #Z‑{order_row['id']}\n"
-         f"Категория: {order_row['category']}\n"
-         f"Тираж: {order_row['quantity']} шт.\n"
-         f"Бюджет: {order_row['budget']} ₽\n"
-         f"Срок: {order_row['lead_time']} дней"),
-        reply_markup=kb))
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Откликнуться", callback_data=f"lead:{order_row['id']}")]]
+    )
+    asyncio.create_task(
+        bot.send_message(
+            factory_tg,
+            (
+                f"🆕 Заявка #Z‑{order_row['id']}\n"
+                f"Категория: {order_row['category']}\n"
+                f"Тираж: {order_row['quantity']} шт.\n"
+                f"Бюджет: {order_row['budget']} ₽\n"
+                f"Срок: {order_row['lead_time']} дней"
+            ),
+            reply_markup=kb,
+        )
+    )
 
 
 def notify_factories(order_row: sqlite3.Row) -> None:
     """Send freshly‑paid order to all matching PRO‑factories."""
+
     factories = fetchmany(
-        """SELECT tg_id FROM factories
-            WHERE is_pro = 1
-              AND (',' || categories || ',') LIKE ('%,' || ? || ',%')
-              AND min_qty <= ?;""",
-        (order_row["category"], order_row["quantity"]))
-    logger.info("Dispatching lead %s to %d factories", order_row["id"], len(factories))
+        """
+        SELECT tg_id FROM factories
+         WHERE is_pro = 1
+           AND (',' || categories || ',') LIKE ('%,' || ? || ',%')
+           AND min_qty <= ?;
+        """,
+        (order_row["category"], order_row["quantity"]),
+    )
+    logger.info("Dispatch lead %s to %d factories", order_row["id"], len(factories))
     for f in factories:
         send_order_card(f["tg_id"], order_row)
+
 
 # ---------------------------------------------------------------------------
 #  /start and main menu
 # ---------------------------------------------------------------------------
 
 @dp.message(Command("start"))
-async def cmd_start(message: Message, state: FSMContext) -> None:
-    kb = types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [types.KeyboardButton(text="🛠 Я – Фабрика")],
-        [types.KeyboardButton(text="🛒 Мне нужна фабрика")],
-        [types.KeyboardButton(text="ℹ Как работает"), types.KeyboardButton(text="🧾 Тарифы")],
-    ])
+async def cmd_start(message: Message, state: FSMContext) -> None:  # noqa: ARG001
+    kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        keyboard=[
+            [types.KeyboardButton(text="🛠 Я – Фабрика")],
+            [types.KeyboardButton(text="🛒 Мне нужна фабрика")],
+            [types.KeyboardButton(text="ℹ Как работает"), types.KeyboardButton(text="🧾 Тарифы")],
+        ],
+    )
     await message.answer("<b>Привет!</b> Кто вы?", reply_markup=kb)
+
 
 # ---------------------------------------------------------------------------
 #  Factory onboarding
@@ -218,13 +261,17 @@ async def factory_inn(message: Message, state: FSMContext) -> None:
 
 @dp.message(FactoryForm.photos, F.photo | F.document)
 async def factory_photos(message: Message, state: FSMContext) -> None:
-    file_ids: Sequence[str] = ([p.file_id for p in message.photo]
-                               if message.photo else [message.document.file_id])
+    file_ids: Sequence[str] = (
+        [p.file_id for p in message.photo] if message.photo else [message.document.file_id]
+    )
     await state.update_data(photos=file_ids)
-    cat_kb = types.ReplyKeyboardMarkup(resize_keyboard=True, keyboard=[
-        [types.KeyboardButton(text="Трикотаж"), types.KeyboardButton(text="Верхняя одежда")],
-        [types.KeyboardButton(text="Домашний текстиль")],
-    ])
+    cat_kb = types.ReplyKeyboardMarkup(
+        resize_keyboard=True,
+        keyboard=[
+            [types.KeyboardButton(text="Трикотаж"), types.KeyboardButton(text="Верхняя одежда")],
+            [types.KeyboardButton(text="Домашний текстиль")],
+        ],
+    )
     await message.answer("Укажите категории производства:", reply_markup=cat_kb)
     await state.set_state(FactoryForm.categories)
 
@@ -254,20 +301,184 @@ async def factory_avg_price(message: Message, state: FSMContext) -> None:
 @dp.message(FactoryForm.portfolio)
 async def factory_portfolio(message: Message, state: FSMContext) -> None:
     await state.update_data(portfolio=message.text.strip())
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(
-        text="Оплатить 2 000 ₽", callback_data="pay_factory")]])
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Оплатить 2 000 ₽", callback_data="pay_factory")]]
+    )
     await message.answer(
         "<b>Готово!</b> Витрина будет проверена модератором в течение 1 дня.\n"
         "Пакет “PRO‑фабрика” – 2 000 ₽/мес.",
-        reply_markup=kb)
+        reply_markup=kb,
+    )
     await state.set_state(FactoryForm.confirm_pay)
 
 
 @dp.callback_query(F.data == "pay_factory", FactoryForm.confirm_pay)
 async def factory_pay(call: CallbackQuery, state: FSMContext) -> None:
-    """Mark factory as PRO, update DB, show menu.
+    """Mark factory as PRO, update DB, show menu."""
 
-    edit_message_text only accepts InlineKeyboardMarkup; we therefore edit the
-    existing message without keyboard and send a **new** one with
-    ReplyKeyboardMarkup."""
-    data = await state
+    data = await state.get_data()
+    tg_id = call.from_user.id
+
+    # Persist factory (insert or update)
+    execute(
+        """
+        INSERT INTO factories (tg_id, inn, categories, min_qty, avg_price, portfolio, is_pro)
+             VALUES (?, ?, ?, ?, ?, ?, 1)
+        ON CONFLICT(tg_id) DO UPDATE SET is_pro = 1;
+        """,
+        (
+            tg_id,
+            data.get("inn"),
+            ",".join(data.get("categories", [])),
+            data.get("min_qty"),
+            data.get("avg_price"),
+            data.get("portfolio"),
+        ),
+    )
+
+    await state.clear()
+
+    # 1️⃣ edit previous message **without** reply_markup (fix ValidationError)
+    await call.message.edit_text(
+        "✅ Статус: <b>PRO</b>. Лиды будут приходить в этот чат.",
+    )
+
+    # 2️⃣ send new message WITH ReplyKeyboard markup
+    await bot.send_message(
+        tg_id,
+        "Меню фабрики:",
+        reply_markup=build_factory_menu(),
+    )
+    await call.answer()
+
+
+# ---------------------------------------------------------------------------
+#  Buyer flow (shortened – core steps)
+# ---------------------------------------------------------------------------
+
+@dp.message(F.text == "🛒 Мне нужна фабрика")
+async def buyer_begin(message: Message, state: FSMContext) -> None:
+    await message.answer("Категория изделия?")
+    await state.set_state(BuyerForm.category)
+
+
+@dp.message(BuyerForm.category)
+async def buyer_category(message: Message, state: FSMContext) -> None:
+    await state.update_data(category=message.text.strip())
+    await message.answer("Тираж (шт.)?")
+    await state.set_state(BuyerForm.quantity)
+
+
+@dp.message(BuyerForm.quantity)
+async def buyer_qty(message: Message, state: FSMContext) -> None:
+    await state.update_data(quantity=int(message.text))
+    await message.answer("Бюджет, ₽?")
+    await state.set_state(BuyerForm.budget)
+
+
+@dp.message(BuyerForm.budget)
+async def buyer_budget(message: Message, state: FSMContext) -> None:
+    await state.update_data(budget=int(message.text))
+    await message.answer("Куда доставить готовую партию?")
+    await state.set_state(BuyerForm.destination)
+
+
+@dp.message(BuyerForm.destination)
+async def buyer_dest(message: Message, state: FSMContext) -> None:
+    await state.update_data(destination=message.text.strip())
+    await message.answer("Нужен ли образец? Срок выпуска (дней)?")
+    await state.set_state(BuyerForm.lead_time)
+
+
+@dp.message(BuyerForm.lead_time)
+async def buyer_lead(message: Message, state: FSMContext) -> None:
+    await state.update_data(lead_time=int(message.text))
+    await message.answer("Прикрепите техзадание (файл) или фото эскиза:")
+    await state.set_state(BuyerForm.file)
+
+
+@dp.message(BuyerForm.file, F.document | F.photo)
+async def buyer_file(message: Message, state: FSMContext) -> None:
+    file_id = message.document.file_id if message.document else message.photo[-1].file_id
+    await state.update_data(file_id=file_id)
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="Оплатить 700 ₽", callback_data="pay_order")]]
+    )
+    await message.answer(
+        "<b>Заявка готова!</b> После оплаты она автоматически уйдёт\n"
+        "всем подходящим фабрикам (PRO‑аккаунты).",
+        reply_markup=kb,
+    )
+    await state.set_state(BuyerForm.confirm_pay)
+
+
+@dp.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
+async def buyer_pay(call: CallbackQuery, state: FSMContext) -> None:
+    data = await state.get_data()
+
+    # Store order
+    execute(
+        """
+        INSERT INTO orders
+            (buyer_id, category, quantity, budget, destination, lead_time, file_id, paid)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1);
+        """,
+        (
+            call.from_user.id,
+            data["category"],
+            data["quantity"],
+            data["budget"],
+            data["destination"],
+            data["lead_time"],
+            data["file_id"],
+        ),
+    )
+    order_id = fetchone("SELECT last_insert_rowid() AS id;")["id"]
+    row = fetchone("SELECT * FROM orders WHERE id = ?;", (order_id,))
+
+    # reset state
+    await state.clear()
+
+    # 1️⃣ edit original message WITHOUT reply_markup
+    await call.message.edit_text("✅ Заявка оплачена. Фабрики получат её в течение минуты!")
+
+    # 2️⃣ send confirmation
+    await bot.send_message(call.from_user.id, "Спасибо! Мы начали поиск фабрик.")
+    await call.answer()
+
+    # 3️⃣ dispatch to factories
+    notify_factories(row)
+
+
+# ---------------------------------------------------------------------------
+#  Bot entry‑point
+# ---------------------------------------------------------------------------
+
+async def main() -> None:
+    init_db()
+
+    # Switch modes: webhook vs polling
+    if os.getenv("BOT_MODE", "POLLING").upper() == "WEBHOOK":
+        from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application  # noqa: WPS433
+        from aiohttp import web
+
+        base_url = os.environ["WEBHOOK_BASE"].rstrip("/")
+        path = f"/tg/{TOKEN}"
+        await bot.set_webhook(f"{base_url}{path}", drop_pending_updates=True)
+
+        app = web.Application()
+        SimpleRequestHandler(dp, bot).register(app, path)
+        setup_application(app, dp, bot=bot)
+        port = int(os.getenv("PORT", "8080"))
+        logger.info("Webhook running on %s:%s", base_url, port)
+        web.run_app(app, port=port)
+    else:
+        # polling
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook cleared ✔ – switched to long‑polling mode")
+        await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
