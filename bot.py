@@ -3059,8 +3059,8 @@ async def cmd_my_deals(msg: Message) -> None:
     )
 
 # Отправка детальных карточек по активным сделкам (макс 5)
-for deal in active_deals[:5]:
-    await send_deal_card(msg.from_user.id, deal, user_role)
+    for deal in active_deals[:5]:
+        await send_deal_card(msg.from_user.id, deal, user_role)
 
 
 async def send_deal_card(user_id: int, deal: dict, user_role: UserRole):
