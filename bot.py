@@ -77,6 +77,32 @@ except ModuleNotFoundError:
     pass
 
 # ---------------------------------------------------------------------------
+#  Config & bootstrap
+# ---------------------------------------------------------------------------
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
+if not TOKEN:
+    raise RuntimeError("Set BOT_TOKEN env var with @BotFather token")
+
+BOT_MODE = os.getenv("BOT_MODE", "POLLING").upper()
+WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").rstrip("/")
+PORT = int(os.getenv("PORT", 8080))
+ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
+
+logging.basicConfig(
+    level=logging.INFO, 
+    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
+)
+logger = logging.getLogger("fabrique-bot")
+
+bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
+dp = Dispatcher(storage=MemoryStorage())
+router = Router()
+dp.include_router(router)
+
+DB_PATH = "fabrique.db"
+DB_VERSION = 2  # Increment when schema changes
+
+# ---------------------------------------------------------------------------
 #  Admin commands
 # ---------------------------------------------------------------------------
 
@@ -556,32 +582,6 @@ async def pay_deposit_with_notification(call: CallbackQuery) -> None:
     )
     
     await call.answer("Предоплата 30% произведена", show_alert=True)
-
-# ---------------------------------------------------------------------------
-#  Config & bootstrap
-# ---------------------------------------------------------------------------
-TOKEN = os.getenv("BOT_TOKEN", "").strip()
-if not TOKEN:
-    raise RuntimeError("Set BOT_TOKEN env var with @BotFather token")
-
-BOT_MODE = os.getenv("BOT_MODE", "POLLING").upper()
-WEBHOOK_BASE = os.getenv("WEBHOOK_BASE", "").rstrip("/")
-PORT = int(os.getenv("PORT", 8080))
-ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
-
-logging.basicConfig(
-    level=logging.INFO, 
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
-)
-logger = logging.getLogger("fabrique-bot")
-
-bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
-dp = Dispatcher(storage=MemoryStorage())
-router = Router()
-dp.include_router(router)
-
-DB_PATH = "fabrique.db"
-DB_VERSION = 2  # Increment when schema changes
 
 # ---------------------------------------------------------------------------
 #  Constants and Enums
