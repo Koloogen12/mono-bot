@@ -2454,7 +2454,10 @@ async def cmd_my_deals(msg: Message) -> None:
         response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
         for deal in active_deals[:3]:
             status = OrderStatus(deal['status'])
-            response += f"\n#{deal['id']} - {deal['title'] or f'Заказ #{deal['order_id']}'}\n"
+            response += (
+    f"\n#{deal['id']} - "
+    f"{deal['title'] or 'Заказ #' + str(deal['order_id'])}\n"
+)
             response += f"Статус: {status.value}\n"
             if user_role == UserRole.BUYER:
                 response += f"Фабрика: {deal['factory_name']}\n"
