@@ -50,14 +50,16 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
 from aiogram import Bot, Dispatcher, F, Router
+from aiogram.fsm.state import State, StatesGroup
+
 class TicketForm(StatesGroup):
     subject = State()
     message = State()
+    
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.types import BotCommand
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import (
     CallbackQuery,
