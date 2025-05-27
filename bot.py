@@ -1794,6 +1794,13 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
     if msg.text and msg.text.lower() not in ["нет", "no", "skip"]:
         portfolio = msg.text.strip()
     
+    # Сохраняем в FSM
+    await state.update_data(portfolio=portfolio)
+    
+    # Теперь получаем все данные, если нужно
+    data = await state.get_data()
+    # дальше твоя логика
+    
     # Get all data
     data = await state.get_data()
     data['portfolio'] = portfolio
