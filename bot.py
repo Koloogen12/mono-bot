@@ -3032,31 +3032,31 @@ async def cmd_my_deals(msg: Message) -> None:
         return
         
     # Группировка сделок по статусу
-active_deals = [d for d in deals if d['status'] not in ['DELIVERED', 'CANCELLED']]
-completed_deals = [d for d in deals if d['status'] == 'DELIVERED']
+    active_deals = [d for d in deals if d['status'] not in ['DELIVERED', 'CANCELLED']]
+    completed_deals = [d for d in deals if d['status'] == 'DELIVERED']
 
-response = "<b>Ваши сделки</b>\n\n"
+    response = "<b>Ваши сделки</b>\n\n"
 
-if active_deals:
-    response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
-    for deal in active_deals[:3]:
-        status = OrderStatus(deal['status'])
-        title = deal['title'] if deal['title'] else f"Заказ #{deal['order_id']}"
-        response += f"\n#{deal['id']} - {title}\n"
-        response += f"Статус: {status.value}\n"
-        if user_role == UserRole.BUYER:
-            response += f"Фабрика: {deal['factory_name']}\n"
+    if active_deals:
+        response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
+        for deal in active_deals[:3]:
+            status = OrderStatus(deal['status'])
+            title = deal['title'] if deal['title'] else f"Заказ #{deal['order_id']}"
+            response += f"\n#{deal['id']} - {title}\n"
+            response += f"Статус: {status.value}\n"
+            if user_role == UserRole.BUYER:
+                response += f"Фабрика: {deal['factory_name']}\n"
 
-    if len(active_deals) > 3:
-        response += f"\n... и еще {len(active_deals) - 3}\n"
+        if len(active_deals) > 3:
+            response += f"\n... и еще {len(active_deals) - 3}\n"
 
-if completed_deals:
-    response += f"\n\n✅ <b>Завершенные ({len(completed_deals)})</b>"
+    if completed_deals:
+        response += f"\n\n✅ <b>Завершенные ({len(completed_deals)})</b>"
 
     await msg.answer(
-    response,
-    reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
-)
+        response,
+        reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
+    )
 
 # Отправка детальных карточек по активным сделкам (макс 5)
 for deal in active_deals[:5]:
