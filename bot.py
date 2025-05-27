@@ -2104,8 +2104,7 @@ async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Заявка уже недоступна", show_alert=True)
         await state.clear()
         return
-    
-    # Insert proposal
+        # Insert proposal
     try:
         proposal_id = insert_and_get_id("""
             INSERT INTO proposals
@@ -2151,34 +2150,33 @@ async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
         ])
         
         # Уведомляем покупателя через собственную систему
-await send_notification(
-    order['buyer_id'],
-    'new_proposal',
-    f'Новое предложение на заказ #{order["id"]}',
-    proposal_caption(proposal_row, factory),
-    {'order_id': order['id'], 'factory_id': call.from_user.id},
-)
+        await send_notification(
+            order['buyer_id'],
+            'new_proposal',
+            f'Новое предложение на заказ #{order["id"]}',
+            proposal_caption(proposal_row, factory),
+            {'order_id': order['id'], 'factory_id': call.from_user.id},
+        )
 
-# Собираем текст для Telegram-сообщения
-message_text = (
-    f"💌 <b>Новое предложение на ваш заказ!</b>\n\n"
-    f"{order_caption(order)}\n\n"
-    f"{proposal_caption(proposal_row, factory)}"
-)
+        # Собираем текст для Telegram-сообщения
+        message_text = (
+            f"💌 <b>Новое предложение на ваш заказ!</b>\n\n"
+            f"{order_caption(order)}\n\n"
+            f"{proposal_caption(proposal_row, factory)}"
+        )
 
-# Отправляем сообщение покупателю параллельно (не блокируя хэндлер)
-asyncio.create_task(
-    bot.send_message(
-        order['buyer_id'],
-        message_text,
-        reply_markup=kb,
-    )
-)
+        # Отправляем сообщение покупателю параллельно (не блокируя хэндлер)
+        asyncio.create_task(
+            bot.send_message(
+                order['buyer_id'],
+                message_text,
+                reply_markup=kb,
+            )
+        )
 
-        
         await state.clear()
         await call.answer("✅ Предложение отправлено!")
-        
+
     except Exception as e:
         logger.error(f"Error creating proposal: {e}")
         if "UNIQUE constraint failed" in str(e):
