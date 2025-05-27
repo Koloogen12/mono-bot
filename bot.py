@@ -65,7 +65,9 @@ from aiogram.types import (
     PhotoSize,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    BotCommand,           
 )
+
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -2701,12 +2703,15 @@ async def on_startup(bot: Bot) -> None:
     asyncio.create_task(run_background_tasks())
     
     # Set bot commands
-    await bot.set_my_commands([
-        ("start", "Главное меню"),
-        ("help", "Помощь"),
-        ("profile", "Мой профиль"),
-        ("support", "Поддержка"),
-    ])
+    from aiogram.types import BotCommand        # добавьте в шапку файла, если ещё нет
+
+await bot.set_my_commands([
+    BotCommand(command="start",   description="Главное меню"),
+    BotCommand(command="help",    description="Помощь"),
+    BotCommand(command="profile", description="Мой профиль"),
+    BotCommand(command="support", description="Поддержка"),
+])
+
     
     logger.info("Bot startup complete ✅")
 
