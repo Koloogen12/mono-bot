@@ -1929,7 +1929,7 @@ async def view_order_details(call: CallbackQuery) -> None:
     
     if order['file_id']:
         buttons.append([
-            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id]}")
+            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id}")
         ])
     
     if has_proposal:
