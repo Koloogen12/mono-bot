@@ -2079,19 +2079,15 @@ async def buyer_requirements(msg: Message, state: FSMContext) -> None:
     if msg.text and msg.text.lower() not in ["нет", "no", "-"]:
         requirements = msg.text.strip()
     
-    await state.update_data(requirements=requirements)
-    await state.set_state(BuyerForm.file)
-    await msg.answer(
-        "Прикрепите техническое задание, эскизы или образцы\n"
-        "(документ или фото).\n\n"
-        "Или напишите «пропустить»:"
-    )
-
-@router.message(BuyerForm.file, F.document | F.photo | F.text)
+    @router.message(BuyerForm.file, F.document | F.photo | F.text)
 async def buyer_file(msg: Message, state: FSMContext) -> None:
     """Process file attachment."""
     file_id = None
-    
+
+    # Получаем requirements из FSM, если понадобится дальше
+    data = await state.get_data()
+    requirements = data.get('requirements')
+
     if msg.text and msg.text.lower() in ["пропустить", "skip", "нет"]:
         pass
     elif msg.document:
@@ -2101,7 +2097,7 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     else:
         await msg.answer("Отправьте файл/фото или напишите «пропустить»:")
         return
-    
+
     await state.update_data(file_id=file_id)
     
     # Show order summary
