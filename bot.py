@@ -280,12 +280,15 @@ async def admin_view_entity(call: CallbackQuery) -> None:
             await call.answer("Сделка не найдена", show_alert=True)
             return
         
+        buyer_info = f"@{deal['buyer_username']}" if deal['buyer_username'] else f"ID:{deal['buyer_id']}"
+        factory_info = f"@{deal['factory_username']}" if deal['factory_username'] else f"ID:{deal['factory_id']}"
+        
         text = (
             f"<b>🤝 Сделка #{entity_id}</b>\n\n"
             f"Заказ: #Z-{deal['order_id']} - {deal['title']}\n"
             f"Категория: {deal['category']}\n"
-            f"Заказчик: @{deal['buyer_username'] or f'ID:{deal['buyer_id']}'}\n"
-            f"Фабрика: {deal['factory_name']} (@{deal['factory_username'] or f'ID:{deal['factory_id']}'})\n"
+            f"Заказчик: {buyer_info}\n"
+            f"Фабрика: {deal['factory_name']} ({factory_info})\n"
             f"Сумма: {format_price(deal['amount'])} ₽\n"
             f"Статус: {deal['status']}\n"
             f"Создана: {deal['created_at'][:16]}\n"
@@ -2490,7 +2493,7 @@ async def view_order_details(call: CallbackQuery) -> None:
     
     if order['file_id']:
         buttons.append([
-            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id]}")
+            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id}")
         ])
     
     if has_proposal:
