@@ -50,8 +50,12 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
 from aiogram import Bot, Dispatcher, F, Router
+class TicketForm(StatesGroup):
+    subject = State()
+    message = State()
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
+from aiogram.types import BotCommand
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -3325,10 +3329,11 @@ async def on_startup(bot: Bot) -> None:
     
     # Set bot commands
     await bot.set_my_commands([
-        ("start", "Главное меню"),
-        ("help", "Помощь"),
-        ("profile", "Мой профиль"),
-        ("support", "Поддержка"),
+    BotCommand(command="start", description="Главное меню"),
+    BotCommand(command="help", description="Помощь"),
+    BotCommand(command="profile", description="Мой профиль"),
+    BotCommand(command="support", description="Поддержка"),
+        
     ])
     
     logger.info("Bot startup complete ✅")
