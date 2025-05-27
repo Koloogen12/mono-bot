@@ -1,3 +1,81 @@
+"""
+Mono‑Fabrique Telegram bot – Production-ready marketplace bot
+================================================================
+Connects garment factories («Фабрика») with buyers («Заказчик»).
+Full-featured implementation with persistent storage, user management,
+comprehensive error handling, and production-ready features.
+
+Main flows
+----------
+* Factory onboarding → payment (₂ 000 ₽/month) → PRO status → receives leads & dashboard
+* Buyer creates order → payment (₇ 00 ₽) → order stored → auto-dispatch to matching factories
+* Factories browse leads or get push notifications → send proposals → Buyer receives offers
+* Secure escrow system for payments with full status tracking
+* Rating system with reviews and reputation management
+
+Features
+--------
+* Persistent user profiles with role detection
+* Advanced search and filtering for orders
+* Notification preferences and settings
+* Analytics dashboard for both sides
+* Automated reminders and follow-ups
+* Support ticket system
+* Admin panel for platform management
+
+Runtime
+-------
+* Works in **long-polling** (default) or **webhook** mode (`BOT_MODE=WEBHOOK`)
+* SQLite persistence (`fabrique.db`) with automatic migrations
+* Graceful shutdown, error recovery, and comprehensive logging
+* Background tasks for notifications and cleanup
+
+Env variables
+-------------
+* `BOT_TOKEN`    – Telegram token (required)
+* `BOT_MODE`     – `POLLING` (default) or `WEBHOOK`
+* `WEBHOOK_BASE` – public HTTPS URL when in webhook mode
+* `PORT`         – HTTP port for webhook (default: 8080)
+* `ADMIN_IDS`    – comma-separated admin Telegram IDs
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import re
+import sqlite3
+import json
+from datetime import datetime, timedelta
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from enum import Enum
+
+from aiogram import Bot, Dispatcher, F, Router
+from aiogram.enums import ParseMode
+from aiogram.filters import Command, CommandStart
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.types import (
+    CallbackQuery,
+    Document,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    Message,
+    PhotoSize,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiohttp import web
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ModuleNotFoundError:
+    pass
+
 # ---------------------------------------------------------------------------
 #  Admin commands
 # ---------------------------------------------------------------------------
@@ -478,81 +556,7 @@ async def pay_deposit_with_notification(call: CallbackQuery) -> None:
     )
     
     await call.answer("Предоплата 30% произведена", show_alert=True)"""Mono‑Fabrique Telegram bot – Production-ready marketplace bot
-================================================================
-Connects garment factories («Фабрика») with buyers («Заказчик»).
-Full-featured implementation with persistent storage, user management,
-comprehensive error handling, and production-ready features.
 
-Main flows
-----------
-* Factory onboarding → payment (₂ 000 ₽/month) → PRO status → receives leads & dashboard
-* Buyer creates order → payment (₇ 00 ₽) → order stored → auto-dispatch to matching factories
-* Factories browse leads or get push notifications → send proposals → Buyer receives offers
-* Secure escrow system for payments with full status tracking
-* Rating system with reviews and reputation management
-
-Features
---------
-* Persistent user profiles with role detection
-* Advanced search and filtering for orders
-* Notification preferences and settings
-* Analytics dashboard for both sides
-* Automated reminders and follow-ups
-* Support ticket system
-* Admin panel for platform management
-
-Runtime
--------
-* Works in **long-polling** (default) or **webhook** mode (`BOT_MODE=WEBHOOK`)
-* SQLite persistence (`fabrique.db`) with automatic migrations
-* Graceful shutdown, error recovery, and comprehensive logging
-* Background tasks for notifications and cleanup
-
-Env variables
--------------
-* `BOT_TOKEN`    – Telegram token (required)
-* `BOT_MODE`     – `POLLING` (default) or `WEBHOOK`
-* `WEBHOOK_BASE` – public HTTPS URL when in webhook mode
-* `PORT`         – HTTP port for webhook (default: 8080)
-* `ADMIN_IDS`    – comma-separated admin Telegram IDs
-"""
-from __future__ import annotations
-
-import asyncio
-import logging
-import os
-import re
-import sqlite3
-import json
-from datetime import datetime, timedelta
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
-from enum import Enum
-
-from aiogram import Bot, Dispatcher, F, Router
-from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    CallbackQuery,
-    Document,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    KeyboardButton,
-    Message,
-    PhotoSize,
-    ReplyKeyboardMarkup,
-    ReplyKeyboardRemove,
-)
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
-
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ModuleNotFoundError:
-    pass
 
 # ---------------------------------------------------------------------------
 #  Config & bootstrap
