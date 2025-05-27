@@ -3030,12 +3030,12 @@ async def cmd_my_deals(msg: Message) -> None:
             reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
         )
         return
-    
-    # Group by status
-    active_deals = [d for d in deals if d['status'] not in ['DELIVERED', 'CANCELLED']]
-    completed_deals = [d for d in deals if d['status'] == 'DELIVERED']
-    
-    response = "<b>Ваши сделки</b>\n\n"
+        
+    # Группировка сделок по статусу
+active_deals = [d for d in deals if d['status'] not in ['DELIVERED', 'CANCELLED']]
+completed_deals = [d for d in deals if d['status'] == 'DELIVERED']
+
+response = "<b>Ваши сделки</b>\n\n"
 
 if active_deals:
     response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
@@ -3046,7 +3046,7 @@ if active_deals:
         response += f"Статус: {status.value}\n"
         if user_role == UserRole.BUYER:
             response += f"Фабрика: {deal['factory_name']}\n"
-    
+
     if len(active_deals) > 3:
         response += f"\n... и еще {len(active_deals) - 3}\n"
 
@@ -3057,19 +3057,20 @@ await msg.answer(
     response,
     reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
 )
-    
-    # Send detailed cards for active deals
-    for deal in active_deals[:5]:
-        await send_deal_card(msg.from_user.id, deal, user_role)
+
+# Отправка детальных карточек по активным сделкам (макс 5)
+for deal in active_deals[:5]:
+    await send_deal_card(msg.from_user.id, deal, user_role)
+
 
 async def send_deal_card(user_id: int, deal: dict, user_role: UserRole):
     """Send deal status card with actions."""
     status = OrderStatus(deal['status'])
     caption = deal_status_caption(dict(deal))
-    
+
     buttons = []
-    
-    # Add status-specific actions
+
+    # Для покупателя
     if user_role == UserRole.BUYER:
         if status == OrderStatus.DRAFT and not deal['deposit_paid']:
             buttons.append([
@@ -3088,13 +3089,13 @@ async def send_deal_card(user_id: int, deal: dict, user_role: UserRole):
                 InlineKeyboardButton(text="✅ Подтвердить получение", callback_data=f"confirm_delivery:{deal['id']}")
             ])
         elif status == OrderStatus.DELIVERED:
-            # Check if rated
             rating = q1("SELECT id FROM ratings WHERE deal_id = ? AND buyer_id = ?", (deal['id'], user_id))
             if not rating:
                 buttons.append([
                     InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"rate_deal:{deal['id']}")
                 ])
-    
+
+    # Для фабрики
     elif user_role == UserRole.FACTORY:
         if status == OrderStatus.DRAFT and deal['deposit_paid']:
             buttons.append([
