@@ -3053,7 +3053,7 @@ if active_deals:
 if completed_deals:
     response += f"\n\n✅ <b>Завершенные ({len(completed_deals)})</b>"
 
-await msg.answer(
+    await msg.answer(
     response,
     reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
 )
