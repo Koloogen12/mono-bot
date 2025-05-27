@@ -1,4 +1,480 @@
-"""Mono‑Fabrique Telegram bot – Production-ready marketplace bot
+# ---------------------------------------------------------------------------
+#  Admin commands
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "👥 Пользователи")
+async def cmd_admin_users(msg: Message) -> None:
+    """Show users statistics for admin."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    stats = q1("""
+        SELECT 
+            COUNT(*) as total,
+            COUNT(CASE WHEN role = 'factory' THEN 1 END) as factories,
+            COUNT(CASE WHEN role = 'buyer' THEN 1 END) as buyers,
+            COUNT(CASE WHEN is_banned = 1 THEN 1 END) as banned,
+            COUNT(CASE WHEN created_at > datetime('now', '-1 day') THEN 1 END) as new_today
+        FROM users
+    """)
+    
+    recent_users = q("""
+        SELECT tg_id, username, full_name, role, created_at
+        FROM users
+        ORDER BY created_at DESC
+        LIMIT 10
+    """)
+    
+    text = (
+        "<b>👥 Статистика пользователей</b>\n\n"
+        f"Всего: {stats['total']}\n"
+        f"├ 🏭 Фабрик: {stats['factories']}\n"
+        f"├ 🛍 Заказчиков: {stats['buyers']}\n"
+        f"├ 🆕 Новых сегодня: {stats['new_today']}\n"
+        f"└ 🚫 Заблокировано: {stats['banned']}\n\n"
+        "<b>Последние регистрации:</b>\n"
+    )
+    
+    for user in recent_users:
+        role_emoji = {'factory': '🏭', 'buyer': '🛍'}.get(user['role'], '👤')
+        username = f"@{user['username']}" if user['username'] else f"ID:{user['tg_id']}"
+        text += f"\n{role_emoji} {username} - {user['created_at'][:16]}"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔍 Поиск пользователя", callback_data="admin_search_user"),
+            InlineKeyboardButton(text="📊 Детальная статистика", callback_data="admin_user_stats")
+        ]
+    ])
+    
+    await msg.answer(text, reply_markup=kb)
+
+@router.message(F.text == "📊 Статистика")
+async def cmd_admin_stats(msg: Message) -> None:
+    """Show platform statistics for admin."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    # Get comprehensive stats
+    stats = q1("""
+        SELECT 
+            (SELECT COUNT(*) FROM orders WHERE paid = 1) as total_orders,
+            (SELECT COUNT(*) FROM orders WHERE paid = 1 AND created_at > datetime('now', '-7 days')) as orders_week,
+            (SELECT COUNT(*) FROM deals) as total_deals,
+            (SELECT COUNT(*) FROM deals WHERE status = 'DELIVERED') as completed_deals,
+            (SELECT SUM(amount) FROM deals WHERE status = 'DELIVERED') as total_turnover,
+            (SELECT SUM(amount) FROM payments WHERE status = 'completed') as total_payments,
+            (SELECT COUNT(*) FROM factories WHERE is_pro = 1) as pro_factories,
+            (SELECT AVG(rating) FROM factories WHERE rating_count > 0) as avg_rating
+    """)
+    
+    # Revenue stats
+    revenue = q1("""
+        SELECT 
+            SUM(CASE WHEN type = 'factory_pro' THEN amount ELSE 0 END) as factory_revenue,
+            SUM(CASE WHEN type = 'order_placement' THEN amount ELSE 0 END) as order_revenue,
+            COUNT(CASE WHEN type = 'factory_pro' THEN 1 END) as pro_subscriptions,
+            COUNT(CASE WHEN type = 'order_placement' THEN 1 END) as paid_orders
+        FROM payments 
+        WHERE status = 'completed' AND created_at > datetime('now', '-30 days')
+    """)
+    
+    text = (
+        "<b>📊 Статистика платформы</b>\n\n"
+        "<b>Заказы:</b>\n"
+        f"├ Всего размещено: {stats['total_orders']}\n"
+        f"├ За последнюю неделю: {stats['orders_week']}\n"
+        f"└ Оплачено размещений: {revenue['paid_orders']} ({format_price(revenue['order_revenue'] or 0)} ₽)\n\n"
+        "<b>Сделки:</b>\n"
+        f"├ Всего сделок: {stats['total_deals']}\n"
+        f"├ Завершено успешно: {stats['completed_deals']}\n"
+        f"└ Общий оборот: {format_price(stats['total_turnover'] or 0)} ₽\n\n"
+        "<b>Фабрики:</b>\n"
+        f"├ PRO-подписок: {stats['pro_factories']}\n"
+        f"├ Продано подписок (30д): {revenue['pro_subscriptions']} ({format_price(revenue['factory_revenue'] or 0)} ₽)\n"
+        f"└ Средний рейтинг: {stats['avg_rating']:.1f}/5.0\n\n" if stats['avg_rating'] else "└ Средний рейтинг: нет данных\n\n"
+    )
+    
+    text += f"<b>💰 Выручка за 30 дней: {format_price((revenue['factory_revenue'] or 0) + (revenue['order_revenue'] or 0))} ₽</b>"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📈 График", callback_data="admin_stats_chart"),
+            InlineKeyboardButton(text="💾 Экспорт", callback_data="admin_export_stats")
+        ],
+        [
+            InlineKeyboardButton(text="🏭 Топ фабрик", callback_data="admin_top_factories"),
+            InlineKeyboardButton(text="🛍 Топ заказчиков", callback_data="admin_top_buyers")
+        ]
+    ])
+    
+    await msg.answer(text, reply_markup=kb)
+
+@router.message(F.text == "🎫 Тикеты")
+async def cmd_admin_tickets(msg: Message) -> None:
+    """Show support tickets for admin."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    # Get tickets stats
+    ticket_stats = q1("""
+        SELECT 
+            COUNT(*) as total,
+            COUNT(CASE WHEN status = 'open' THEN 1 END) as open,
+            COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress,
+            COUNT(CASE WHEN status = 'closed' THEN 1 END) as closed,
+            COUNT(CASE WHEN priority = 'high' THEN 1 END) as high_priority
+    """)
+    
+    # Get recent tickets
+    recent_tickets = q("""
+        SELECT t.*, u.username, u.full_name
+        FROM tickets t
+        JOIN users u ON t.user_id = u.tg_id
+        WHERE t.status IN ('open', 'in_progress')
+        ORDER BY 
+            CASE t.priority 
+                WHEN 'high' THEN 1 
+                WHEN 'normal' THEN 2 
+                ELSE 3 
+            END,
+            t.created_at DESC
+        LIMIT 10
+    """)
+    
+    text = (
+        "<b>🎫 Тикеты поддержки</b>\n\n"
+        f"Всего: {ticket_stats['total']}\n"
+        f"├ 🔴 Открытых: {ticket_stats['open']}\n"
+        f"├ 🟡 В работе: {ticket_stats['in_progress']}\n"
+        f"├ 🟢 Закрытых: {ticket_stats['closed']}\n"
+        f"└ ⚡ Высокий приоритет: {ticket_stats['high_priority']}\n\n"
+    )
+    
+    if recent_tickets:
+        text += "<b>Активные обращения:</b>\n"
+        for ticket in recent_tickets:
+            priority_emoji = {'high': '🔴', 'normal': '🟡'}.get(ticket['priority'], '🟢')
+            username = f"@{ticket['username']}" if ticket['username'] else ticket['full_name']
+            text += f"\n{priority_emoji} #{ticket['id']} - {ticket['subject'][:30]}... ({username})"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="🔴 Открытые", callback_data="admin_tickets:open"),
+            InlineKeyboardButton(text="🟡 В работе", callback_data="admin_tickets:in_progress")
+        ],
+        [
+            InlineKeyboardButton(text="📋 Все тикеты", callback_data="admin_tickets:all"),
+            InlineKeyboardButton(text="📊 Статистика", callback_data="admin_tickets:stats")
+        ]
+    ])
+    
+    await msg.answer(text, reply_markup=kb)
+
+@router.callback_query(F.data.startswith("admin_view_"))
+async def admin_view_entity(call: CallbackQuery) -> None:
+    """View specific entity details for admin."""
+    if call.from_user.id not in ADMIN_IDS:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    entity_type, entity_id = call.data.replace("admin_view_", "").split(":")
+    entity_id = int(entity_id)
+    
+    if entity_type == "user":
+        user = q1("SELECT * FROM users WHERE tg_id = ?", (entity_id,))
+        if not user:
+            await call.answer("Пользователь не найден", show_alert=True)
+            return
+        
+        # Get user's activity
+        orders_count = q1("SELECT COUNT(*) as cnt FROM orders WHERE buyer_id = ?", (entity_id,))
+        deals_count = q1("SELECT COUNT(*) as cnt FROM deals WHERE buyer_id = ? OR factory_id = ?", (entity_id, entity_id))
+        
+        text = (
+            f"<b>👤 Пользователь</b>\n\n"
+            f"ID: {entity_id}\n"
+            f"Имя: {user['full_name']}\n"
+            f"Username: @{user['username'] or 'нет'}\n"
+            f"Роль: {user['role']}\n"
+            f"Телефон: {user['phone'] or 'не указан'}\n"
+            f"Email: {user['email'] or 'не указан'}\n"
+            f"Регистрация: {user['created_at'][:16]}\n"
+            f"Последняя активность: {user['last_active'][:16]}\n\n"
+            f"Заказов: {orders_count['cnt'] if orders_count else 0}\n"
+            f"Сделок: {deals_count['cnt'] if deals_count else 0}\n"
+            f"Статус: {'🚫 Заблокирован' if user['is_banned'] else '✅ Активен'}"
+        )
+        
+        buttons = [
+            [
+                InlineKeyboardButton(text="💬 Написать", url=f"tg://user?id={entity_id}"),
+                InlineKeyboardButton(text="🚫 Заблокировать" if not user['is_banned'] else "✅ Разблокировать", 
+                                   callback_data=f"admin_toggle_ban:{entity_id}")
+            ]
+        ]
+        
+        if user['role'] == 'factory':
+            buttons.append([
+                InlineKeyboardButton(text="🏭 Профиль фабрики", callback_data=f"admin_view_factory:{entity_id}")
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await call.message.answer(text, reply_markup=kb)
+        
+    elif entity_type == "order":
+        order = q1("""
+            SELECT o.*, u.username, u.full_name
+            FROM orders o
+            JOIN users u ON o.buyer_id = u.tg_id
+            WHERE o.id = ?
+        """, (entity_id,))
+        
+        if not order:
+            await call.answer("Заказ не найден", show_alert=True)
+            return
+        
+        proposals_count = q1("SELECT COUNT(*) as cnt FROM proposals WHERE order_id = ?", (entity_id,))
+        deal = q1("SELECT * FROM deals WHERE order_id = ?", (entity_id,))
+        
+        text = (
+            f"<b>📦 Заказ #Z-{entity_id}</b>\n\n"
+            f"Название: {order['title']}\n"
+            f"Заказчик: @{order['username'] or order['full_name']}\n"
+            f"Категория: {order['category']}\n"
+            f"Количество: {format_price(order['quantity'])} шт.\n"
+            f"Бюджет: {format_price(order['budget'])} ₽/шт.\n"
+            f"Общая сумма: {format_price(order['quantity'] * order['budget'])} ₽\n"
+            f"Срок: {order['lead_time']} дней\n"
+            f"Город: {order['destination']}\n"
+            f"Создан: {order['created_at'][:16]}\n"
+            f"Статус: {'✅ Оплачен' if order['paid'] else '❌ Не оплачен'}\n"
+            f"Предложений: {proposals_count['cnt'] if proposals_count else 0}\n"
+        )
+        
+        if deal:
+            text += f"\n<b>Сделка:</b> #{deal['id']} (статус: {deal['status']})"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Написать заказчику", url=f"tg://user?id={order['buyer_id']}"),
+                InlineKeyboardButton(text="📋 Предложения", callback_data=f"admin_order_proposals:{entity_id}")
+            ]
+        ])
+        
+        await call.message.answer(text, reply_markup=kb)
+        
+    elif entity_type == "deal":
+        deal = q1("""
+            SELECT d.*, o.title, o.category, f.name as factory_name, 
+                   u1.username as buyer_username, u2.username as factory_username
+            FROM deals d
+            JOIN orders o ON d.order_id = o.id
+            JOIN factories f ON d.factory_id = f.tg_id
+            JOIN users u1 ON d.buyer_id = u1.tg_id
+            JOIN users u2 ON d.factory_id = u2.tg_id
+            WHERE d.id = ?
+        """, (entity_id,))
+        
+        if not deal:
+            await call.answer("Сделка не найдена", show_alert=True)
+            return
+        
+        text = (
+            f"<b>🤝 Сделка #{entity_id}</b>\n\n"
+            f"Заказ: #Z-{deal['order_id']} - {deal['title']}\n"
+            f"Категория: {deal['category']}\n"
+            f"Заказчик: @{deal['buyer_username'] or f'ID:{deal['buyer_id']}'}\n"
+            f"Фабрика: {deal['factory_name']} (@{deal['factory_username'] or f'ID:{deal['factory_id']}'})\n"
+            f"Сумма: {format_price(deal['amount'])} ₽\n"
+            f"Статус: {deal['status']}\n"
+            f"Создана: {deal['created_at'][:16]}\n"
+        )
+        
+        if deal['deposit_paid']:
+            text += "\n✅ Предоплата 30% получена"
+        if deal['final_paid']:
+            text += "\n✅ Финальная оплата получена"
+        if deal['tracking_num']:
+            text += f"\n🚚 Трек: {deal['tracking_num']}"
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="💬 Заказчик", url=f"tg://user?id={deal['buyer_id']}"),
+                InlineKeyboardButton(text="💬 Фабрика", url=f"tg://user?id={deal['factory_id']}")
+            ],
+            [
+                InlineKeyboardButton(text="📋 Заказ", callback_data=f"admin_view_order:{deal['order_id']}"),
+                InlineKeyboardButton(text="🚨 Открыть диспут", callback_data=f"admin_open_dispute:{entity_id}")
+            ]
+        ])
+        
+        await call.message.answer(text, reply_markup=kb)
+    
+    await call.answer()
+
+@router.callback_query(F.data.startswith("ticket:"))
+async def create_support_ticket(call: CallbackQuery, state: FSMContext) -> None:
+    """Start creating support ticket."""
+    category = call.data.split(":", 1)[1]
+    
+    category_names = {
+        'general': 'Общий вопрос',
+        'payment': 'Проблемы с оплатой',
+        'order': 'Вопрос по заказу',
+        'factory': 'Вопрос по работе фабрики',
+        'complaint': 'Жалоба',
+        'suggestion': 'Предложение'
+    }
+    
+    await state.update_data(ticket_category=category)
+    await state.set_state(TicketForm.subject)
+    
+    await call.message.answer(
+        f"<b>Создание обращения</b>\n"
+        f"Категория: {category_names.get(category, category)}\n\n"
+        f"Введите тему обращения:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await call.answer()
+
+@router.message(TicketForm.subject)
+async def ticket_subject(msg: Message, state: FSMContext) -> None:
+    """Process ticket subject."""
+    if not msg.text or len(msg.text) < 5:
+        await msg.answer("Введите более подробную тему (минимум 5 символов):")
+        return
+    
+    await state.update_data(subject=msg.text.strip())
+    await state.set_state(TicketForm.message)
+    await msg.answer("Опишите вашу проблему или вопрос подробно:")
+
+@router.message(TicketForm.message)
+async def ticket_message(msg: Message, state: FSMContext) -> None:
+    """Process ticket message and create ticket."""
+    if not msg.text or len(msg.text) < 20:
+        await msg.answer("Пожалуйста, опишите проблему подробнее (минимум 20 символов):")
+        return
+    
+    data = await state.get_data()
+    
+    # Determine priority based on category
+    priority = 'normal'
+    if data['ticket_category'] in ['payment', 'complaint']:
+        priority = 'high'
+    
+    # Create ticket
+    ticket_id = insert_and_get_id("""
+        INSERT INTO tickets (user_id, subject, category, priority, status)
+        VALUES (?, ?, ?, ?, 'open')
+    """, (msg.from_user.id, data['subject'], data['ticket_category'], priority))
+    
+    # Create first message
+    insert_and_get_id("""
+        INSERT INTO ticket_messages (ticket_id, user_id, message)
+        VALUES (?, ?, ?)
+    """, (ticket_id, msg.from_user.id, msg.text.strip()))
+    
+    # Get user info
+    user = get_or_create_user(msg.from_user)
+    
+    # Notify admins about new ticket
+    priority_emoji = {'high': '🔴', 'normal': '🟡'}.get(priority, '🟢')
+    
+    await notify_admins(
+        'new_ticket',
+        f'{priority_emoji} Новый тикет #{ticket_id}',
+        f"От: @{msg.from_user.username or user['full_name']}\n"
+        f"Категория: {data['ticket_category']}\n"
+        f"Тема: {data['subject']}\n\n"
+        f"Сообщение:\n{msg.text[:200]}{'...' if len(msg.text) > 200 else ''}",
+        {
+            'ticket_id': ticket_id,
+            'user_id': msg.from_user.id,
+            'priority': priority
+        },
+        [[
+            InlineKeyboardButton(text="📋 Открыть тикет", callback_data=f"admin_ticket:{ticket_id}"),
+            InlineKeyboardButton(text="💬 Ответить", callback_data=f"admin_reply_ticket:{ticket_id}")
+        ]]
+    )
+    
+    await state.clear()
+    await msg.answer(
+        f"✅ <b>Обращение #{ticket_id} создано!</b>\n\n"
+        f"Мы ответим вам в течение 24 часов.\n"
+        f"Вы получите уведомление о нашем ответе.\n\n"
+        f"Спасибо за обращение!",
+        reply_markup=kb_main(get_user_role(msg.from_user.id))
+    )
+
+# Add notification calls to payment and status update functions
+@router.callback_query(F.data.startswith("pay_deposit:"))
+async def pay_deposit_with_notification(call: CallbackQuery) -> None:
+    """Process deposit payment with admin notification."""
+    deal_id = int(call.data.split(":", 1)[1])
+    
+    # Update deal status
+    run("UPDATE deals SET status = 'PRODUCTION', deposit_paid = 1 WHERE id = ?", (deal_id,))
+    
+    deal = q1("""
+        SELECT d.*, o.title, f.name as factory_name
+        FROM deals d
+        JOIN orders o ON d.order_id = o.id
+        JOIN factories f ON d.factory_id = f.tg_id
+        WHERE d.id = ?
+    """, (deal_id,))
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    # Calculate deposit amount
+    deposit_amount = int(deal['amount'] * 0.3)
+    
+    # Notify admins
+    await notify_admins(
+        'deposit_paid',
+        '💰 Предоплата получена',
+        f"Сделка #{deal_id}\n"
+        f"Заказ: {deal['title']}\n"
+        f"Фабрика: {deal['factory_name']}\n"
+        f"Сумма предоплаты: {format_price(deposit_amount)} ₽ (30%)\n"
+        f"Общая сумма сделки: {format_price(deal['amount'])} ₽",
+        {
+            'deal_id': deal_id,
+            'order_id': deal['order_id'],
+            'amount': deposit_amount
+        },
+        [[
+            InlineKeyboardButton(text="📊 Детали сделки", callback_data=f"admin_view_deal:{deal_id}")
+        ]]
+    )
+    
+    # Continue with original logic
+    await call.message.edit_text(
+        "💰 Предоплата 30% произведена!\n\n" +
+        deal_status_caption(deal) + "\n\n" +
+        "Фабрика приступила к производству. Мы уведомим вас о готовности партии."
+    )
+    
+    # Notify factory
+    tracking_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Добавить трек-номер отправления", callback_data=f"add_tracking:{deal_id}")
+    ]])
+    
+    asyncio.create_task(
+        bot.send_message(
+            deal["factory_id"],
+            f"💰 Получена предоплата 30% для заказа #Z-{deal['order_id']}!\n\n"
+            f"Статус: {deal['status']}\n"
+            f"{ORDER_STATUS_DESCRIPTIONS[OrderStatus(deal['status'])]}\n\n"
+            f"Когда партия будет готова к отправке, добавьте трек-номер:",
+            reply_markup=tracking_kb
+        )
+    )
+    
+    await call.answer("Предоплата 30% произведена", show_alert=True)"""Mono‑Fabrique Telegram bot – Production-ready marketplace bot
 ================================================================
 Connects garment factories («Фабрика») with buyers («Заказчик»).
 Full-featured implementation with persistent storage, user management,
@@ -65,9 +541,7 @@ from aiogram.types import (
     PhotoSize,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
-    BotCommand,           
 )
-
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
 from aiohttp import web
 
@@ -550,6 +1024,46 @@ async def send_notification(user_id: int, type: str, title: str, message: str, d
         run("UPDATE notifications SET is_sent = 1, sent_at = CURRENT_TIMESTAMP WHERE id = ?", (notification_id,))
     except Exception as e:
         logger.error(f"Failed to send notification {notification_id}: {e}")
+
+async def notify_admins(event_type: str, title: str, message: str, data: dict | None = None, 
+                       buttons: list | None = None):
+    """Send notification to all admins."""
+    if not ADMIN_IDS:
+        return
+    
+    # Format admin message
+    admin_message = (
+        f"🔔 <b>{title}</b>\n\n"
+        f"{message}\n\n"
+        f"🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    
+    # Add data details if provided
+    if data:
+        admin_message += "\n\n📊 <b>Детали:</b>"
+        for key, value in data.items():
+            admin_message += f"\n• {key}: {value}"
+    
+    # Create keyboard if buttons provided
+    kb = None
+    if buttons:
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    # Send to all admins
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_message, reply_markup=kb)
+            
+            # Also save to admin's notifications
+            await send_notification(
+                admin_id,
+                f"admin_{event_type}",
+                title,
+                message,
+                data
+            )
+        except Exception as e:
+            logger.error(f"Failed to notify admin {admin_id}: {e}")
 
 # ---------------------------------------------------------------------------
 #  Enhanced FSM States
@@ -1351,7 +1865,7 @@ async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
         """, (call.from_user.id, photo_id, 1 if idx == 0 else 0))
     
     # Create payment record
-    insert_and_get_id("""
+    payment_id = insert_and_get_id("""
         INSERT INTO payments 
         (user_id, type, amount, status, reference_type, reference_id)
         VALUES (?, 'factory_pro', 2000, 'completed', 'factory', ?)
@@ -1363,6 +1877,27 @@ async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
         'min_qty': data['min_qty'],
         'max_qty': data['max_qty']
     })
+    
+    # Notify admins about new factory registration
+    await notify_admins(
+        'factory_registered',
+        '🏭 Новая фабрика зарегистрирована!',
+        f"Компания: {data['legal_name']}\n"
+        f"ИНН: {data['inn']}\n"
+        f"Категории: {data['categories']}\n"
+        f"Мин. партия: {format_price(data['min_qty'])} шт.\n"
+        f"Средняя цена: {format_price(data['avg_price'])} ₽",
+        {
+            'user_id': call.from_user.id,
+            'username': call.from_user.username or 'N/A',
+            'payment_id': payment_id,
+            'amount': '2000 ₽'
+        },
+        [[
+            InlineKeyboardButton(text="👤 Профиль", callback_data=f"admin_view_user:{call.from_user.id}"),
+            InlineKeyboardButton(text="💬 Написать", url=f"tg://user?id={call.from_user.id}")
+        ]]
+    )
     
     await state.clear()
     await call.message.edit_text(
@@ -1611,7 +2146,7 @@ async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
     ))
     
     # Create payment record
-    insert_and_get_id("""
+    payment_id = insert_and_get_id("""
         INSERT INTO payments 
         (user_id, type, amount, status, reference_type, reference_id)
         VALUES (?, 'order_placement', 700, 'completed', 'order', ?)
@@ -1624,6 +2159,30 @@ async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
         'quantity': data['quantity'],
         'budget': data['budget']
     })
+    
+    # Calculate total budget
+    total_budget = data['quantity'] * data['budget']
+    
+    # Notify admins about new order
+    await notify_admins(
+        'order_created',
+        '📦 Новый заказ размещен!',
+        f"Заказ #Z-{order_id}: {data['title']}\n"
+        f"Категория: {data['category']}\n"
+        f"Количество: {format_price(data['quantity'])} шт.\n"
+        f"Бюджет: {format_price(total_budget)} ₽\n"
+        f"Город: {data['destination']}",
+        {
+            'buyer_id': call.from_user.id,
+            'buyer_username': call.from_user.username or 'N/A',
+            'payment_id': payment_id,
+            'payment_amount': '700 ₽'
+        },
+        [[
+            InlineKeyboardButton(text="📋 Детали заказа", callback_data=f"admin_view_order:{order_id}"),
+            InlineKeyboardButton(text="💬 Написать заказчику", url=f"tg://user?id={call.from_user.id}")
+        ]]
+    )
     
     await state.clear()
     await call.message.edit_text(
@@ -1931,7 +2490,7 @@ async def view_order_details(call: CallbackQuery) -> None:
     
     if order['file_id']:
         buttons.append([
-            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id}")
+            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id]}")
         ])
     
     if has_proposal:
@@ -2104,7 +2663,8 @@ async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("Заявка уже недоступна", show_alert=True)
         await state.clear()
         return
-        # Insert proposal
+    
+    # Insert proposal
     try:
         proposal_id = insert_and_get_id("""
             INSERT INTO proposals
@@ -2149,34 +2709,27 @@ async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
             [InlineKeyboardButton(text="✅ Выбрать эту фабрику", callback_data=f"choose_factory:{order['id']}:{call.from_user.id}")]
         ])
         
-        # Уведомляем покупателя через собственную систему
         await send_notification(
             order['buyer_id'],
             'new_proposal',
             f'Новое предложение на заказ #{order["id"]}',
             proposal_caption(proposal_row, factory),
-            {'order_id': order['id'], 'factory_id': call.from_user.id},
+            {'order_id': order['id'], 'factory_id': call.from_user.id}
         )
-
-        # Собираем текст для Telegram-сообщения
-        message_text = (
-            f"💌 <b>Новое предложение на ваш заказ!</b>\n\n"
-            f"{order_caption(order)}\n\n"
-            f"{proposal_caption(proposal_row, factory)}"
-        )
-
-        # Отправляем сообщение покупателю параллельно (не блокируя хэндлер)
+        
         asyncio.create_task(
             bot.send_message(
                 order['buyer_id'],
-                message_text,
-                reply_markup=kb,
+                f"💌 <b>Новое предложение на ваш заказ!</b>\n\n" +
+                order_caption(order) + "\n\n" +
+                proposal_caption(proposal_row, factory),
+                reply_markup=kb
             )
         )
-
+        
         await state.clear()
         await call.answer("✅ Предложение отправлено!")
-
+        
     except Exception as e:
         logger.error(f"Error creating proposal: {e}")
         if "UNIQUE constraint failed" in str(e):
@@ -2351,6 +2904,26 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         'amount': total_amount
     })
     
+    # Notify admins about new deal
+    await notify_admins(
+        'deal_created',
+        '🤝 Новая сделка создана!',
+        f"Сделка #{deal_id}\n"
+        f"Заказ: #Z-{order_id} - {order['title']}\n"
+        f"Фабрика: {proposal['factory_name']}\n"
+        f"Сумма: {format_price(total_amount)} ₽",
+        {
+            'buyer_id': call.from_user.id,
+            'factory_id': factory_id,
+            'category': order['category'],
+            'quantity': order['quantity']
+        },
+        [[
+            InlineKeyboardButton(text="📊 Детали сделки", callback_data=f"admin_view_deal:{deal_id}"),
+            InlineKeyboardButton(text="📋 Заказ", callback_data=f"admin_view_order:{order_id}")
+        ]]
+    )
+    
     # Send confirmation
     deal_text = (
         f"✅ <b>Сделка создана!</b>\n\n"
@@ -2462,10 +3035,7 @@ async def cmd_my_deals(msg: Message) -> None:
         response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
         for deal in active_deals[:3]:
             status = OrderStatus(deal['status'])
-            response += (
-    f"\n#{deal['id']} - "
-    f"{deal['title'] or 'Заказ #' + str(deal['order_id'])}\n"
-)
+            response += f"\n#{deal['id']} - {deal['title'] or f'Заказ #{deal['order_id']}'}\n"
             response += f"Статус: {status.value}\n"
             if user_role == UserRole.BUYER:
                 response += f"Фабрика: {deal['factory_name']}\n"
@@ -2658,8 +3228,12 @@ async def cmd_support(msg: Message, state: FSMContext) -> None:
 
 async def run_background_tasks():
     """Run periodic background tasks."""
+    last_daily_report = None
+    
     while True:
         try:
+            current_time = datetime.now()
+            
             # Check PRO expiration every hour
             await check_pro_expiration()
             
@@ -2669,6 +3243,11 @@ async def run_background_tasks():
                 WHERE is_sent = 1 
                   AND created_at < datetime('now', '-30 days')
             """)
+            
+            # Send daily report at 9:00 AM
+            if current_time.hour == 9 and last_daily_report != current_time.date():
+                await send_daily_report()
+                last_daily_report = current_time.date()
             
             # Update analytics
             daily_stats = q1("""
@@ -2691,6 +3270,35 @@ async def run_background_tasks():
                 f"Deals: {daily_stats['deals']}"
             )
             
+            # Check for stale deals (no activity for 7 days)
+            stale_deals = q("""
+                SELECT d.*, o.title, f.name as factory_name, u.username as buyer_username
+                FROM deals d
+                JOIN orders o ON d.order_id = o.id
+                JOIN factories f ON d.factory_id = f.tg_id
+                JOIN users u ON d.buyer_id = u.tg_id
+                WHERE d.status NOT IN ('DELIVERED', 'CANCELLED')
+                  AND d.updated_at < datetime('now', '-7 days')
+            """)
+            
+            if stale_deals:
+                stale_report = "<b>⚠️ Застрявшие сделки (нет активности > 7 дней)</b>\n\n"
+                for deal in stale_deals[:5]:
+                    stale_report += (
+                        f"#{deal['id']} - {deal['title']}\n"
+                        f"Статус: {deal['status']}\n"
+                        f"Покупатель: @{deal['buyer_username']}\n"
+                        f"Фабрика: {deal['factory_name']}\n\n"
+                    )
+                
+                await notify_admins(
+                    'stale_deals',
+                    '⚠️ Обнаружены застрявшие сделки',
+                    stale_report,
+                    {'count': len(stale_deals)},
+                    [[InlineKeyboardButton(text="📋 Все застрявшие", callback_data="admin_stale_deals")]]
+                )
+            
         except Exception as e:
             logger.error(f"Error in background tasks: {e}")
         
@@ -2709,15 +3317,13 @@ async def on_startup(bot: Bot) -> None:
     asyncio.create_task(run_background_tasks())
     
     # Set bot commands
-    from aiogram.types import BotCommand        # добавьте в шапку файла, если ещё нет
-
-await bot.set_my_commands([
-    BotCommand(command="start",   description="Главное меню"),
-    BotCommand(command="help",    description="Помощь"),
-    BotCommand(command="profile", description="Мой профиль"),
-    BotCommand(command="support", description="Поддержка"),
-])
-
+    await bot.set_my_commands([
+        ("start", "Главное меню"),
+        ("help", "Помощь"),
+        ("profile", "Мой профиль"),
+        ("support", "Поддержка"),
+    ])
+    
     logger.info("Bot startup complete ✅")
 
 async def run_webhook() -> None:
