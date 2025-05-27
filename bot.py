@@ -2072,13 +2072,6 @@ async def buyer_description(msg: Message, state: FSMContext) -> None:
         "Или напишите «нет»:"
     )
 
-@router.message(BuyerForm.requirements)
-async def buyer_requirements(msg: Message, state: FSMContext) -> None:
-    """Process special requirements."""
-    requirements = ""
-    if msg.text and msg.text.lower() not in ["нет", "no", "-"]:
-        requirements = msg.text.strip()
-    
 @router.message(BuyerForm.file, F.document | F.photo | F.text)
 async def buyer_file(msg: Message, state: FSMContext) -> None:
     """Process file attachment."""
