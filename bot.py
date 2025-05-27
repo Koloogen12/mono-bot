@@ -2079,7 +2079,7 @@ async def buyer_requirements(msg: Message, state: FSMContext) -> None:
     if msg.text and msg.text.lower() not in ["нет", "no", "-"]:
         requirements = msg.text.strip()
     
-    @router.message(BuyerForm.file, F.document | F.photo | F.text)
+@router.message(BuyerForm.file, F.document | F.photo | F.text)
 async def buyer_file(msg: Message, state: FSMContext) -> None:
     """Process file attachment."""
     file_id = None
