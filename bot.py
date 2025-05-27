@@ -2150,23 +2150,31 @@ async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
             [InlineKeyboardButton(text="✅ Выбрать эту фабрику", callback_data=f"choose_factory:{order['id']}:{call.from_user.id}")]
         ])
         
-        await send_notification(
-            order['buyer_id'],
-            'new_proposal',
-            f'Новое предложение на заказ #{order["id"]}',
-            proposal_caption(proposal_row, factory),
-            {'order_id': order['id'], 'factory_id': call.from_user.id}
-        )
-        
-        asyncio.create_task(
-            bot.send_message(
-                order['buyer_id'],
-                f"💌 <b>Новое предложение на ваш заказ!</b>\n\n" +
-                order_caption(order) + "\n\n" +
-                proposal_caption(proposal_row, factory),
-                reply_markup=kb
-            )
-        )
+        # Уведомляем покупателя через собственную систему
+await send_notification(
+    order['buyer_id'],
+    'new_proposal',
+    f'Новое предложение на заказ #{order["id"]}',
+    proposal_caption(proposal_row, factory),
+    {'order_id': order['id'], 'factory_id': call.from_user.id},
+)
+
+# Собираем текст для Telegram-сообщения
+message_text = (
+    f"💌 <b>Новое предложение на ваш заказ!</b>\n\n"
+    f"{order_caption(order)}\n\n"
+    f"{proposal_caption(proposal_row, factory)}"
+)
+
+# Отправляем сообщение покупателю параллельно (не блокируя хэндлер)
+asyncio.create_task(
+    bot.send_message(
+        order['buyer_id'],
+        message_text,
+        reply_markup=kb,
+    )
+)
+
         
         await state.clear()
         await call.answer("✅ Предложение отправлено!")
