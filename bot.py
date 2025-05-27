@@ -555,8 +555,7 @@ async def pay_deposit_with_notification(call: CallbackQuery) -> None:
         )
     )
     
-    await call.answer("Предоплата 30% произведена", show_alert=True)"""Mono‑Fabrique Telegram bot – Production-ready marketplace bot
-
+    await call.answer("Предоплата 30% произведена", show_alert=True)
 
 # ---------------------------------------------------------------------------
 #  Config & bootstrap
