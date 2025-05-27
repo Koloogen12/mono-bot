@@ -2712,7 +2712,6 @@ await bot.set_my_commands([
     BotCommand(command="support", description="Поддержка"),
 ])
 
-    
     logger.info("Bot startup complete ✅")
 
 async def run_webhook() -> None:
