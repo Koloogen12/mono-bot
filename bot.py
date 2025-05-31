@@ -1409,18 +1409,11 @@ def order_caption(row: sqlite3.Row, detailed: bool = False) -> str:
         f"📍 Город: {row['destination']}"
     )
     
-    if detailed:
-        try:
-            if row['description']:
-                caption += f"\n\n📝 Описание:\n{row['description']}"
-        except (KeyError, IndexError):
-            pass
+    if detailed and 'description' in row and row['description']:
+        caption += f"\n\n📝 Описание:\n{row['description']}"
     
-    try:
-        if row['views']:
-            caption += f"\n\n👁 Просмотров: {row['views']}"
-    except (KeyError, IndexError):
-        pass
+    if 'views' in row and row['views']:
+        caption += f"\n\n👁 Просмотров: {row['views']}"
     
     return caption
 
@@ -1441,11 +1434,8 @@ def proposal_caption(proposal: sqlite3.Row, factory: sqlite3.Row | None = None) 
         if factory['completed_orders'] > 0:
             caption += f"\n✅ Выполнено: {factory['completed_orders']} заказов"
     
-    try:
-        if proposal['message']:
-            caption += f"\n\n💬 Сообщение:\n{proposal['message']}"
-    except (KeyError, IndexError):
-        pass
+    if 'message' in proposal and proposal['message']:
+        caption += f"\n\n💬 Сообщение:\n{proposal['message']}"
     
     return caption
 
