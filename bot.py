@@ -2262,6 +2262,18 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     await state.set_state(BuyerForm.confirm_pay)
     await msg.answer(summary, reply_markup=kb)
 
+# --- ВНЕ других функций, отдельно! ---
+@router.callback_query(F.data.startswith("download:"))
+async def download_tz(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
+    file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
+
+    if file_id:
+        await callback.message.answer_document(file_id, caption="Техническое задание по заказу")
+    else:
+        await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
+
 @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
 async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
     """Process order payment."""
