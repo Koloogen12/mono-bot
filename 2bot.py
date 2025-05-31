@@ -2417,9 +2417,8 @@ async def cmd_profile(msg: Message) -> None:
             "У вас пока нет профиля. Выберите, кто вы:",
             reply_markup=kb_main()
         )
-
 # ---------------------------------------------------------------------------
-#  Изменение профиля (редактирование полей, категорий)
+#  Изменение профиля (редактирование полей, категорий, управление фото)
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "edit_profile")
@@ -2604,9 +2603,7 @@ async def cancel_edit(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.edit_text("❌ Редактирование отменено")
     await call.answer()
 
-# ---------------------------------------------------------------------------
-#  Управление фотографиями фабрики
-# ---------------------------------------------------------------------------
+# ------------------- Управление фотографиями профиля фабрики -------------------
 
 @router.callback_query(F.data == "manage_photos")
 async def manage_photos_start(call: CallbackQuery, state: FSMContext) -> None:
@@ -2615,10 +2612,10 @@ async def manage_photos_start(call: CallbackQuery, state: FSMContext) -> None:
     if not factory:
         await call.answer("Профиль фабрики не найден", show_alert=True)
         return
-    
+
     photos = q("SELECT * FROM factory_photos WHERE factory_id = ? ORDER BY is_primary DESC, created_at", 
               (call.from_user.id,))
-    
+
     text = f"<b>Управление фотографиями</b>\n\n"
     if photos:
         text += f"У вас {len(photos)} фото:\n"
@@ -2627,7 +2624,7 @@ async def manage_photos_start(call: CallbackQuery, state: FSMContext) -> None:
             text += f"{primary}{i}. {photo['type'].title()}\n"
     else:
         text += "У вас пока нет фотографий"
-    
+
     buttons = [
         [InlineKeyboardButton(text="📸 Добавить фото", callback_data="photo_add")],
         [InlineKeyboardButton(text="🗑 Удалить все", callback_data="photo_delete_all")],
@@ -2637,6 +2634,304 @@ async def manage_photos_start(call: CallbackQuery, state: FSMContext) -> None:
     kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await call.message.edit_text(text, reply_markup=kb)
     await call.answer()
+
+@router.callback_query(F.data == "photo_add")
+async def photo_add_start(call: CallbackQuery, state: FSMContext) -> None:
+    """Start adding photos."""
+    await state.set_state(PhotoManagementForm.upload)
+    
+    await call.message.edit_text(
+        "📸 <b>Добавление фото</b>\n\n"
+        "Отправьте фотографии производства (до 3 штук).\n"
+        "Или напишите «готово» когда закончите:"
+    )
+    await call.answer()
+
+@router.message(PhotoManagementForm.upload, F.photo)
+async def photo_upload_process(msg: Message, state: FSMContext) -> None:
+    """Process photo upload."""
+    # Check current photo count
+    current_count = q1("SELECT COUNT(*) as cnt FROM factory_photos WHERE factory_id = ?", 
+                      (msg.from_user.id,))['cnt']
+    
+    if current_count >= 5:
+        await msg.answer("❌ Максимум 5 фотографий. Удалите старые, чтобы добавить новые.")
+        return
+    
+    # Add photo
+    is_primary = 1 if current_count == 0 else 0
+    run("""
+        INSERT INTO factory_photos (factory_id, file_id, type, is_primary)
+        VALUES (?, ?, 'workshop', ?)
+    """, (msg.from_user.id, msg.photo[-1].file_id, is_primary))
+    
+    await msg.answer(
+        f"✅ Фото добавлено! ({current_count + 1}/5)\n"
+        f"Отправьте еще или напишите «готово»"
+    )
+
+@router.message(PhotoManagementForm.upload, F.text)
+async def photo_upload_finish(msg: Message, state: FSMContext) -> None:
+    """Finish photo upload."""
+    if msg.text and msg.text.lower() in ["готово", "done", "стоп"]:
+        await state.clear()
+        await msg.answer(
+            "✅ Фотографии обновлены!",
+            reply_markup=kb_factory_menu()
+        )
+    else:
+        await msg.answer("Отправьте фото или напишите «готово»")
+
+@router.callback_query(F.data == "photo_delete_all")
+async def photo_delete_all(call: CallbackQuery) -> None:
+    """Delete all photos."""
+    run("DELETE FROM factory_photos WHERE factory_id = ?", (call.from_user.id,))
+    
+    await call.message.edit_text("✅ Все фотографии удалены")
+    await call.answer("Фотографии удалены")
+
+@router.callback_query(F.data == "photo_close")
+async def photo_close(call: CallbackQuery) -> None:
+    """Close photo management."""
+    await call.message.edit_text("📸 Управление фотографиями закрыто")
+    await call.answer()
+
+
+# ---------------------------------------------------------------------------
+#  Аналитика фабрики
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "📊 Аналитика")
+async def cmd_factory_analytics(msg: Message) -> None:
+    """Show factory analytics."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "❌ Аналитика доступна только для PRO-фабрик.\n\n"
+            "Оформите подписку для получения детальной статистики.",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    stats = q1("""
+        SELECT 
+            COUNT(DISTINCT p.id) as total_proposals,
+            COUNT(DISTINCT CASE WHEN p.is_accepted = 1 THEN p.id END) as accepted_proposals,
+            COUNT(DISTINCT d.id) as total_deals,
+            COUNT(DISTINCT CASE WHEN d.status = 'DELIVERED' THEN d.id END) as completed_deals,
+            SUM(CASE WHEN d.status = 'DELIVERED' THEN d.amount ELSE 0 END) as total_revenue
+        FROM proposals p
+        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
+        WHERE p.factory_id = ?
+    """, (msg.from_user.id,))
+
+    if not stats or stats['total_proposals'] == 0:
+        await msg.answer(
+            "📊 <b>Аналитика</b>\n\n"
+            "На данный момент у нас недостаточно данных для отображения аналитики.\n\n"
+            "Мы собираем данные с момента вашей регистрации. "
+            "Начните откликаться на заявки, и здесь появится подробная статистика!",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    proposal_conversion = (stats['accepted_proposals'] / stats['total_proposals']) * 100 if stats['total_proposals'] > 0 else 0
+    deal_conversion = (stats['completed_deals'] / stats['total_deals']) * 100 if stats['total_deals'] > 0 else 0
+
+    analytics_text = (
+        f"📊 <b>Аналитика фабрики</b>\n\n"
+        f"<b>Предложения:</b>\n"
+        f"├ Всего отправлено: {stats['total_proposals']}\n"
+        f"├ Принято: {stats['accepted_proposals']}\n"
+        f"└ Конверсия: {proposal_conversion:.1f}%\n\n"
+        f"<b>Сделки:</b>\n"
+        f"├ Всего: {stats['total_deals']}\n"
+        f"├ Завершено: {stats['completed_deals']}\n"
+        f"└ Успешность: {deal_conversion:.1f}%\n\n"
+        f"<b>Финансы:</b>\n"
+        f"└ Общий оборот: {format_price(stats['total_revenue'] or 0)} ₽\n\n"
+    )
+
+    recent_activity = q1("""
+        SELECT 
+            COUNT(DISTINCT p.id) as recent_proposals,
+            COUNT(DISTINCT d.id) as recent_deals
+        FROM proposals p
+        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
+        WHERE p.factory_id = ? AND p.created_at > datetime('now', '-30 days')
+    """, (msg.from_user.id,))
+
+    analytics_text += (
+        f"<b>За последние 30 дней:</b>\n"
+        f"├ Предложений: {recent_activity['recent_proposals']}\n"
+        f"└ Новых сделок: {recent_activity['recent_deals']}"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📈 Детальная статистика", callback_data="analytics_detailed"),
+            InlineKeyboardButton(text="📊 Рейтинг среди фабрик", callback_data="analytics_rating")
+        ]
+    ])
+    await msg.answer(analytics_text, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  Рейтинг фабрики
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "⭐ Рейтинг")
+async def cmd_factory_rating(msg: Message) -> None:
+    """Show factory rating."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "Профиль фабрики не найден",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    if factory['rating_count'] == 0:
+        await msg.answer(
+            "⭐ <b>Рейтинг</b>\n\n"
+            "У вас еще нет оценок. Не расстраивайтесь, в ближайшее время "
+            "мы найдем для вас заказ и ваш рейтинг вырастет!\n\n"
+            "💡 <b>Как получить высокий рейтинг:</b>\n"
+            "• Качественно выполняйте заказы\n"
+            "• Соблюдайте сроки\n"
+            "• Поддерживайте связь с заказчиками\n"
+            "• Предоставляйте фото процесса производства",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    ratings = q("""
+        SELECT r.*, o.title, u.full_name as buyer_name
+        FROM ratings r
+        JOIN deals d ON r.deal_id = d.id
+        JOIN orders o ON d.order_id = o.id
+        JOIN users u ON r.buyer_id = u.tg_id
+        WHERE r.factory_id = ?
+        ORDER BY r.created_at DESC
+        LIMIT 5
+    """, (msg.from_user.id,))
+
+    rating_text = (
+        f"⭐ <b>Ваш рейтинг: {factory['rating']:.1f}/5.0</b>\n"
+        f"📊 Основан на {factory['rating_count']} отзывах\n\n"
+        f"<b>Последние отзывы:</b>\n"
+    )
+
+    for rating in ratings:
+        stars = "⭐" * rating['rating']
+        rating_text += (
+            f"\n{stars} ({rating['rating']}/5)\n"
+            f"Заказ: {rating['title'][:30]}...\n"
+            f"От: {rating['buyer_name']}\n"
+        )
+        if rating['comment']:
+            rating_text += f"💬 {rating['comment'][:50]}...\n"
+
+    position = q1("""
+        SELECT COUNT(*) + 1 as position
+        FROM factories
+        WHERE rating > ? AND rating_count > 0
+    """, (factory['rating'],))
+
+    if position:
+        rating_text += f"\n🏆 Ваша позиция: #{position['position']} среди всех фабрик"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Все отзывы", callback_data="view_all_ratings")]
+    ])
+    await msg.answer(rating_text, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  Баланс фабрики
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "💳 Баланс")
+async def cmd_factory_balance(msg: Message) -> None:
+    """Show factory balance."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "Профиль фабрики не найден",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    active_deals_sum = q1("""
+        SELECT SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ? AND status IN ('PRODUCTION', 'READY_TO_SHIP', 'IN_TRANSIT')
+    """, (msg.from_user.id,))
+
+    completed_revenue = q1("""
+        SELECT SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ? AND status = 'DELIVERED'
+    """, (msg.from_user.id,))
+
+    pending_payments = q1("""
+        SELECT SUM(amount * 0.7) as total
+        FROM deals
+        WHERE factory_id = ? AND status = 'READY_TO_SHIP' AND final_paid = 0
+    """, (msg.from_user.id,))
+
+    current_balance = active_deals_sum['total'] or 0
+    total_earned = completed_revenue['total'] or 0
+    pending_amount = pending_payments['total'] or 0
+
+    if current_balance == 0 and total_earned == 0:
+        await msg.answer(
+            "💳 <b>Баланс</b>\n\n"
+            "Здесь будет отображаться ваш баланс, равный сумме принятых "
+            "в работу заказов, а также статистика по выплатам.\n\n"
+            "Начните выполнять заказы, и ваша финансовая статистика появится здесь!",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    balance_text = (
+        f"💳 <b>Финансы</b>\n\n"
+        f"<b>Текущий баланс:</b>\n"
+        f"💰 В работе: {format_price(current_balance)} ₽\n"
+    )
+
+    if pending_amount > 0:
+        balance_text += f"⏳ Ожидается: {format_price(int(pending_amount))} ₽\n"
+
+    balance_text += (
+        f"\n<b>Статистика:</b>\n"
+        f"✅ Всего заработано: {format_price(total_earned)} ₽\n"
+    )
+
+    deals_breakdown = q("""
+        SELECT status, COUNT(*) as count, SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ?
+        GROUP BY status
+    """, (msg.from_user.id,))
+
+    if deals_breakdown:
+        balance_text += f"\n<b>Сделки по статусам:</b>\n"
+        for deal in deals_breakdown:
+            status_names = {
+                'PRODUCTION': '🔄 Производство',
+                'READY_TO_SHIP': '📦 Готово к отправке',
+                'IN_TRANSIT': '🚚 В пути',
+                'DELIVERED': '✅ Доставлено'
+            }
+            status_name = status_names.get(deal['status'], deal['status'])
+            balance_text += f"{status_name}: {deal['count']} ({format_price(deal['total'])} ₽)\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 История платежей", callback_data="payment_history"),
+            InlineKeyboardButton(text="📈 Динамика доходов", callback_data="revenue_chart")
+        ]
+    ])
+    await msg.answer(balance_text, reply_markup=kb)
 
 # ---------------------------------------------------------------------------
 #  Factory leads browsing
@@ -3820,319 +4115,4 @@ async def send_daily_report():
     
 
 
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-    
-    await call.message.edit_text(text, reply_markup=kb)
-    await call.answer()
 
-@router.callback_query(F.data == "photo_add")
-async def photo_add_start(call: CallbackQuery, state: FSMContext) -> None:
-    """Start adding photos."""
-    await state.set_state(PhotoManagementForm.upload)
-    
-    await call.message.edit_text(
-        "📸 <b>Добавление фото</b>\n\n"
-        "Отправьте фотографии производства (до 3 штук).\n"
-        "Или напишите «готово» когда закончите:"
-    )
-    await call.answer()
-
-@router.message(PhotoManagementForm.upload, F.photo)
-async def photo_upload_process(msg: Message, state: FSMContext) -> None:
-    """Process photo upload."""
-    # Check current photo count
-    current_count = q1("SELECT COUNT(*) as cnt FROM factory_photos WHERE factory_id = ?", 
-                      (msg.from_user.id,))['cnt']
-    
-    if current_count >= 5:
-        await msg.answer("❌ Максимум 5 фотографий. Удалите старые, чтобы добавить новые.")
-        return
-    
-    # Add photo
-    is_primary = 1 if current_count == 0 else 0
-    run("""
-        INSERT INTO factory_photos (factory_id, file_id, type, is_primary)
-        VALUES (?, ?, 'workshop', ?)
-    """, (msg.from_user.id, msg.photo[-1].file_id, is_primary))
-    
-    await msg.answer(
-        f"✅ Фото добавлено! ({current_count + 1}/5)\n"
-        f"Отправьте еще или напишите «готово»"
-    )
-
-@router.message(PhotoManagementForm.upload, F.text)
-async def photo_upload_finish(msg: Message, state: FSMContext) -> None:
-    """Finish photo upload."""
-    if msg.text and msg.text.lower() in ["готово", "done", "стоп"]:
-        await state.clear()
-        await msg.answer(
-            "✅ Фотографии обновлены!",
-            reply_markup=kb_factory_menu()
-        )
-    else:
-        await msg.answer("Отправьте фото или напишите «готово»")
-
-@router.callback_query(F.data == "photo_delete_all")
-async def photo_delete_all(call: CallbackQuery) -> None:
-    """Delete all photos."""
-    run("DELETE FROM factory_photos WHERE factory_id = ?", (call.from_user.id,))
-    
-    await call.message.edit_text("✅ Все фотографии удалены")
-    await call.answer("Фотографии удалены")
-
-@router.callback_query(F.data == "photo_close")
-async def photo_close(call: CallbackQuery) -> None:
-    """Close photo management."""
-    await call.message.edit_text("📸 Управление фотографиями закрыто")
-    await call.answer()
-
-# ИСПРАВЛЕНО: Аналитика фабрики
-@router.message(F.text == "📊 Аналитика")
-async def cmd_factory_analytics(msg: Message) -> None:
-    """Show factory analytics."""
-    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (msg.from_user.id,))
-    
-    if not factory:
-        await msg.answer(
-            "❌ Аналитика доступна только для PRO-фабрик.\n\n"
-            "Оформите подписку для получения детальной статистики.",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    # Get basic stats
-    stats = q1("""
-        SELECT 
-            COUNT(DISTINCT p.id) as total_proposals,
-            COUNT(DISTINCT CASE WHEN p.is_accepted = 1 THEN p.id END) as accepted_proposals,
-            COUNT(DISTINCT d.id) as total_deals,
-            COUNT(DISTINCT CASE WHEN d.status = 'DELIVERED' THEN d.id END) as completed_deals,
-            SUM(CASE WHEN d.status = 'DELIVERED' THEN d.amount ELSE 0 END) as total_revenue
-        FROM proposals p
-        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
-        WHERE p.factory_id = ?
-    """, (msg.from_user.id,))
-    
-    # Check if we have enough data
-    if not stats or stats['total_proposals'] == 0:
-        await msg.answer(
-            "📊 <b>Аналитика</b>\n\n"
-            "На данный момент у нас недостаточно данных для отображения аналитики.\n\n"
-            "Мы собираем данные с момента вашей регистрации. "
-            "Начните откликаться на заявки, и здесь появится подробная статистика!",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    # Calculate conversion rates
-    proposal_conversion = 0
-    if stats['total_proposals'] > 0:
-        proposal_conversion = (stats['accepted_proposals'] / stats['total_proposals']) * 100
-    
-    deal_conversion = 0
-    if stats['total_deals'] > 0:
-        deal_conversion = (stats['completed_deals'] / stats['total_deals']) * 100
-    
-    analytics_text = (
-        f"📊 <b>Аналитика фабрики</b>\n\n"
-        f"<b>Предложения:</b>\n"
-        f"├ Всего отправлено: {stats['total_proposals']}\n"
-        f"├ Принято: {stats['accepted_proposals']}\n"
-        f"└ Конверсия: {proposal_conversion:.1f}%\n\n"
-        f"<b>Сделки:</b>\n"
-        f"├ Всего: {stats['total_deals']}\n"
-        f"├ Завершено: {stats['completed_deals']}\n"
-        f"└ Успешность: {deal_conversion:.1f}%\n\n"
-        f"<b>Финансы:</b>\n"
-        f"└ Общий оборот: {format_price(stats['total_revenue'] or 0)} ₽\n\n"
-    )
-    
-    # Get last 30 days activity
-    recent_activity = q1("""
-        SELECT 
-            COUNT(DISTINCT p.id) as recent_proposals,
-            COUNT(DISTINCT d.id) as recent_deals
-        FROM proposals p
-        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
-        WHERE p.factory_id = ? AND p.created_at > datetime('now', '-30 days')
-    """, (msg.from_user.id,))
-    
-    analytics_text += (
-        f"<b>За последние 30 дней:</b>\n"
-        f"├ Предложений: {recent_activity['recent_proposals']}\n"
-        f"└ Новых сделок: {recent_activity['recent_deals']}"
-    )
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📈 Детальная статистика", callback_data="analytics_detailed"),
-            InlineKeyboardButton(text="📊 Рейтинг среди фабрик", callback_data="analytics_rating")
-        ]
-    ])
-    
-    await msg.answer(analytics_text, reply_markup=kb)
-
-# ИСПРАВЛЕНО: Рейтинг фабрики
-@router.message(F.text == "⭐ Рейтинг")
-async def cmd_factory_rating(msg: Message) -> None:
-    """Show factory rating."""
-    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
-    
-    if not factory:
-        await msg.answer(
-            "Профиль фабрики не найден",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    if factory['rating_count'] == 0:
-        await msg.answer(
-            "⭐ <b>Рейтинг</b>\n\n"
-            "У вас еще нет оценок. Не расстраивайтесь, в ближайшее время "
-            "мы найдем для вас заказ и ваш рейтинг вырастет!\n\n"
-            "💡 <b>Как получить высокий рейтинг:</b>\n"
-            "• Качественно выполняйте заказы\n"
-            "• Соблюдайте сроки\n"
-            "• Поддерживайте связь с заказчиками\n"
-            "• Предоставляйте фото процесса производства",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    # Get detailed ratings
-    ratings = q("""
-        SELECT r.*, o.title, u.full_name as buyer_name
-        FROM ratings r
-        JOIN deals d ON r.deal_id = d.id
-        JOIN orders o ON d.order_id = o.id
-        JOIN users u ON r.buyer_id = u.tg_id
-        WHERE r.factory_id = ?
-        ORDER BY r.created_at DESC
-        LIMIT 5
-    """, (msg.from_user.id,))
-    
-    rating_text = (
-        f"⭐ <b>Ваш рейтинг: {factory['rating']:.1f}/5.0</b>\n"
-        f"📊 Основан на {factory['rating_count']} отзывах\n\n"
-        f"<b>Последние отзывы:</b>\n"
-    )
-    
-    for rating in ratings:
-        stars = "⭐" * rating['rating']
-        rating_text += (
-            f"\n{stars} ({rating['rating']}/5)\n"
-            f"Заказ: {rating['title'][:30]}...\n"
-            f"От: {rating['buyer_name']}\n"
-        )
-        
-        if rating['comment']:
-            rating_text += f"💬 {rating['comment'][:50]}...\n"
-    
-    # Get position among factories
-    position = q1("""
-        SELECT COUNT(*) + 1 as position
-        FROM factories
-        WHERE rating > ? AND rating_count > 0
-    """, (factory['rating'],))
-    
-    if position:
-        rating_text += f"\n🏆 Ваша позиция: #{position['position']} среди всех фабрик"
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📋 Все отзывы", callback_data="view_all_ratings")]
-    ])
-    
-    await msg.answer(rating_text, reply_markup=kb)
-
-# ИСПРАВЛЕНО: Баланс фабрики
-@router.message(F.text == "💳 Баланс")
-async def cmd_factory_balance(msg: Message) -> None:
-    """Show factory balance."""
-    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
-    
-    if not factory:
-        await msg.answer(
-            "Профиль фабрики не найден",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    # Get balance from active deals
-    active_deals_sum = q1("""
-        SELECT SUM(amount) as total
-        FROM deals
-        WHERE factory_id = ? AND status IN ('PRODUCTION', 'READY_TO_SHIP', 'IN_TRANSIT')
-    """, (msg.from_user.id,))
-    
-    # Get completed deals revenue
-    completed_revenue = q1("""
-        SELECT SUM(amount) as total
-        FROM deals
-        WHERE factory_id = ? AND status = 'DELIVERED'
-    """, (msg.from_user.id,))
-    
-    # Get pending payments (70% final payments)
-    pending_payments = q1("""
-        SELECT SUM(amount * 0.7) as total
-        FROM deals
-        WHERE factory_id = ? AND status = 'READY_TO_SHIP' AND final_paid = 0
-    """, (msg.from_user.id,))
-    
-    current_balance = active_deals_sum['total'] or 0
-    total_earned = completed_revenue['total'] or 0
-    pending_amount = pending_payments['total'] or 0
-    
-    if current_balance == 0 and total_earned == 0:
-        await msg.answer(
-            "💳 <b>Баланс</b>\n\n"
-            "Здесь будет отображаться ваш баланс, равный сумме принятых "
-            "в работу заказов, а также статистика по выплатам.\n\n"
-            "Начните выполнять заказы, и ваша финансовая статистика появится здесь!",
-            reply_markup=kb_factory_menu()
-        )
-        return
-    
-    balance_text = (
-        f"💳 <b>Финансы</b>\n\n"
-        f"<b>Текущий баланс:</b>\n"
-        f"💰 В работе: {format_price(current_balance)} ₽\n"
-    )
-    
-    if pending_amount > 0:
-        balance_text += f"⏳ Ожидается: {format_price(int(pending_amount))} ₽\n"
-    
-    balance_text += (
-        f"\n<b>Статистика:</b>\n"
-        f"✅ Всего заработано: {format_price(total_earned)} ₽\n"
-    )
-    
-    # Get deals breakdown
-    deals_breakdown = q("""
-        SELECT status, COUNT(*) as count, SUM(amount) as total
-        FROM deals
-        WHERE factory_id = ?
-        GROUP BY status
-    """, (msg.from_user.id,))
-    
-    if deals_breakdown:
-        balance_text += f"\n<b>Сделки по статусам:</b>\n"
-        for deal in deals_breakdown:
-            status_names = {
-                'PRODUCTION': '🔄 Производство',
-                'READY_TO_SHIP': '📦 Готово к отправке',
-                'IN_TRANSIT': '🚚 В пути',
-                'DELIVERED': '✅ Доставлено'
-            }
-            status_name = status_names.get(deal['status'], deal['status'])
-            balance_text += f"{status_name}: {deal['count']} ({format_price(deal['total'])} ₽)\n"
-    
-    # Payment history button
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="📊 История платежей", callback_data="payment_history"),
-            InlineKeyboardButton(text="📈 Динамика доходов", callback_data="revenue_chart")
-        ]
-    ])
-    
-    await msg.answer(balance_text, reply_markup=kb)
