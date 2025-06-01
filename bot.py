@@ -51,6 +51,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.fsm.context import FSMContext
+from payments import create_payment
 
 class TicketForm(StatesGroup):
     subject = State()
@@ -653,6 +656,30 @@ async def ticket_message(msg: Message, state: FSMContext) -> None:
     )
 
 # Add notification calls to payment and status update functions
+
+@router.callback_query(F.data.startswith("pay_sample:"))
+async def pay_sample_handler(call: CallbackQuery) -> None:
+    """Process sample payment step (skip if cost is 0)."""
+    deal_id = int(call.data.split(":", 1)[1])
+    deal = q1("SELECT * FROM deals WHERE id = ?", (deal_id,))
+    if not deal:
+        await call.message.answer("Сделка не найдена.")
+        return
+
+    sample_cost = deal.get("sample_cost", 0)
+    if sample_cost == 0:
+        # Скипаем этап оплаты, обновляем статус
+        q("UPDATE deals SET deposit_paid = 1, status = ? WHERE id = ?", ("SAMPLE_PASS", deal_id))
+        await call.message.answer("Оплата за образец не требуется. Сделка переходит к следующему этапу.")
+        # Тут можно добавить уведомления фабрике и заказчику
+        # await send_notification(...) если требуется
+    else:
+        # Логика оплаты образца, например, выставление счета
+        await call.message.answer(
+            f"Стоимость образца: {sample_cost} ₽. Перейдите к оплате по кнопке ниже."
+            # Здесь можешь добавить кнопку оплаты, если нужно
+        )
+
 @router.callback_query(F.data.startswith("pay_deposit:"))
 async def pay_deposit_with_notification(call: CallbackQuery) -> None:
     """Process deposit payment with admin notification."""
@@ -2276,8 +2303,28 @@ async def download_tz(callback: CallbackQuery):
 
 @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
 async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
-    """Process order payment."""
+    """Init payment for order placement."""
     data = await state.get_data()
+    user_id = call.from_user.id
+    amount = 700
+    description = "Оплата размещения заказа на платформе"
+    return_url = "https://t.me/your_bot_username"  # замени на свой
+
+    payment = create_payment(amount, description, return_url, metadata={"user_id": user_id})
+    payment_id = payment.id
+    pay_url = payment.confirmation.confirmation_url
+
+    # Сохраняем payment_id и параметры заказа во временное состояние FSM
+    await state.update_data(payment_id=payment_id, order_data=data)
+
+    await call.message.answer(
+        f"Для размещения заказа необходимо оплатить {amount}₽. "
+        f"Перейдите по ссылке для оплаты:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
+            [InlineKeyboardButton(text="Проверить оплату", callback_data="check_order_payment")]
+        ])
+    )
     
     # Create order
     order_id = insert_and_get_id("""
