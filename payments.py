@@ -1,7 +1,7 @@
 from yookassa import Configuration, Payment
 
-Configuration.account_id = "your_shop_id"
-Configuration.secret_key = "your_secret_key"
+Configuration.account_id = "497610"
+Configuration.secret_key = "live_lw2lVKYBA6ExP2VrXg220ZfPlusNJqNs8BsByoNYZbo"
 
 def create_payment(amount, description, return_url, metadata=None):
     payment = Payment.create({
