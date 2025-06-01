@@ -2280,6 +2280,20 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
         f"\n\n💳 <b>Стоимость размещения: 700 ₽</b>\n\n"
         f"После оплаты ваш заказ увидят все подходящие фабрики"
     )
+
+    # Генерируем платёж заранее для url-кнопки
+    data = await state.get_data()
+    user_id = message.from_user.id
+    amount = 700
+    description = "Оплата размещения заказа на платформе"
+    return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
+    
+    payment = create_payment(amount, description, return_url, metadata={"user_id": user_id})
+    payment_id = payment.id
+    pay_url = payment.confirmation.confirmation_url
+    
+    # Сохраняем payment_id и все order_data во временное хранилище (FSM, Redis, БД)
+    await state.update_data(payment_id=payment_id, order_data=data)
     
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💳 Оплатить 700 ₽", callback_data="pay_order"),
