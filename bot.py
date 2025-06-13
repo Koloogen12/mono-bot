@@ -1268,6 +1268,7 @@ class FactoryForm(StatesGroup):
     description = State()
     portfolio = State()
     confirm_pay = State()
+    confirm = State()
 
 class BuyerForm(StatesGroup):
     title = State()
