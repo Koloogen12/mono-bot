@@ -1999,7 +1999,6 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
     await state.set_state(FactoryForm.confirm)
 
 # --- Обработчик кнопки "Оплатить" ---
-print("DEBUG FactoryForm:", FactoryForm, dir(FactoryForm))
 @router.callback_query(F.data == "pay_factory", FactoryForm.confirm)
 async def on_pay_factory(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
