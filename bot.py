@@ -1268,6 +1268,7 @@ class BuyerForm(StatesGroup):
     requirements = State()
     file = State()
     confirm_pay = State()
+    finish = State() 
 
 class ProposalForm(StatesGroup):
     price = State()
