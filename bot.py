@@ -2283,7 +2283,7 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
 
     # Генерируем платёж заранее для url-кнопки
     data = await state.get_data()
-    user_id = message.from_user.id
+    user_id = msg.from_user.id
     amount = 700
     description = "Оплата размещения заказа на платформе"
     return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
