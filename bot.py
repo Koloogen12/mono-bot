@@ -2333,26 +2333,25 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     await state.set_state(BuyerForm.confirm_pay)
     await msg.answer(summary, reply_markup=kb)
     
-    # --- ВНЕ других функций, отдельно! ---
-    @router.callback_query(F.data.startswith("download:"))
-    async def download_tz(callback: CallbackQuery):
-        order_id = int(callback.data.split(":")[1])
-        order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
-        file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
-    
-        if file_id:
-            await callback.message.answer_document(file_id, caption="Техническое задание по заказу")
-        else:
-            await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
-    
-    @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
-    async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
-        """Init payment for order placement."""
-        data = await state.get_data()
-        user_id = call.from_user.id
-        amount = 700
-        description = "Оплата размещения заказа на платформе"
-        return_url = "https://t.me/your_bot_username"  # замени на свой
+   @router.callback_query(F.data.startswith("download:"))
+async def download_tz(callback: CallbackQuery):
+    order_id = int(callback.data.split(":")[1])
+    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
+    file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
+
+    if file_id:
+        await callback.message.answer_document(file_id, caption="Техническое задание по заказу")
+    else:
+        await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
+
+@router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
+async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
+    """Init payment for order placement."""
+    data = await state.get_data()
+    user_id = call.from_user.id
+    amount = 700
+    description = "Оплата размещения заказа на платформе"
+    return_url = "https://t.me/your_bot_username"  # замени на свой
 
     # --- ЗАГЛУШКА для теста без платежей ---
     payment_id = "test_payment_id"
@@ -2373,6 +2372,7 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
 
 @router.callback_query(F.data == "check_order_payment", BuyerForm.confirm_pay)
 async def check_order_payment(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
     await state.set_state(BuyerForm.finish)  # или другое нужное состояние!
     await call.message.answer("Оплата успешно подтверждена! Ваш заказ принят в работу ✅")
     # Create order
