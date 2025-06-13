@@ -2346,13 +2346,13 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
             await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
     
     @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
-    async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
-        """Init payment for order placement."""
-        data = await state.get_data()
-        user_id = call.from_user.id
-        amount = 700
-        description = "Оплата размещения заказа на платформе"
-        return_url = "https://t.me/your_bot_username"  # замени на свой
+async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
+    """Init payment for order placement."""
+    data = await state.get_data()
+    user_id = call.from_user.id
+    amount = 700
+    description = "Оплата размещения заказа на платформе"
+    return_url = "https://t.me/your_bot_username"  # замени на свой
 
     # --- ЗАГЛУШКА для теста без платежей ---
     payment_id = "test_payment_id"
@@ -2375,7 +2375,6 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
 async def check_order_payment(call: CallbackQuery, state: FSMContext):
     await state.set_state(BuyerForm.finish)  # или другое нужное состояние!
     await call.message.answer("Оплата успешно подтверждена! Ваш заказ принят в работу ✅")
-    
     # Create order
     order_id = insert_and_get_id("""
         INSERT INTO orders
