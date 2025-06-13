@@ -2333,7 +2333,7 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     await state.set_state(BuyerForm.confirm_pay)
     await msg.answer(summary, reply_markup=kb)
     
-   @router.callback_query(F.data.startswith("download:"))
+@router.callback_query(F.data.startswith("download:"))
 async def download_tz(callback: CallbackQuery):
     order_id = int(callback.data.split(":")[1])
     order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
