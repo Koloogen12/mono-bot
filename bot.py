@@ -64,6 +64,16 @@ class FactoryForm(StatesGroup):
     next_state = State()
     portfolio = State()
     confirm = State()
+    description = State()
+    finish = State()
+
+router = Router()
+
+def format_price(val):
+    try:
+        return f"{int(val):,}".replace(",", " ")
+    except Exception:
+        return str(val)
 
 class ProfileEditForm(StatesGroup):
     field_selection = State()
@@ -1936,11 +1946,9 @@ async def factory_avg_price(msg: Message, state: FSMContext) -> None:
 
 @router.message(FactoryForm.description)
 async def factory_description(msg: Message, state: FSMContext) -> None:
-    """Process description."""
     if not msg.text or len(msg.text) < 20:
         await msg.answer("❌ Напишите более подробное описание (минимум 20 символов):")
         return
-    
     await state.update_data(description=msg.text.strip())
     await state.set_state(FactoryForm.portfolio)
     await msg.answer(
@@ -1948,26 +1956,18 @@ async def factory_description(msg: Message, state: FSMContext) -> None:
         "Или напишите «нет»:"
     )
 
+# --- Шаг: портфолио ---
 @router.message(FactoryForm.portfolio)
 async def factory_portfolio(msg: Message, state: FSMContext) -> None:
-    """Process portfolio link."""
     portfolio = ""
     if msg.text and msg.text.lower() not in ["нет", "no", "skip"]:
         portfolio = msg.text.strip()
-    
-    # Сохраняем в FSM
     await state.update_data(portfolio=portfolio)
-    
-    # Get all data
     data = await state.get_data()
-    data['portfolio'] = portfolio
-    
-    # Show confirmation
     categories_list = data['categories'].split(',')
     categories_text = ", ".join([c.capitalize() for c in categories_list[:3]])
     if len(categories_list) > 3:
         categories_text += f" и еще {len(categories_list) - 3}"
-    
     confirmation_text = (
         "<b>Проверьте данные вашей фабрики:</b>\n\n"
         f"🏢 Компания: {data['legal_name']}\n"
@@ -1977,14 +1977,11 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
         f"📊 Партия: от {format_price(data['min_qty'])} до {format_price(data['max_qty'])} шт.\n"
         f"💰 Средняя цена: {format_price(data['avg_price'])} ₽\n"
     )
-    
     if portfolio:
         confirmation_text += f"🔗 Портфолио: {portfolio}\n"
-    
     photos_count = len(data.get('photos', []))
     if photos_count > 0:
         confirmation_text += f"📸 Фото: {photos_count} шт.\n"
-    
     confirmation_text += (
         f"\n💳 <b>Стоимость PRO-подписки: 2 000 ₽/месяц</b>\n\n"
         f"После оплаты вы получите:\n"
@@ -1993,31 +1990,22 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
         f"✅ Приоритет в выдаче\n"
         f"✅ Поддержку менеджера"
     )
-
-    # --- ВАЖНО: кнопки для оплаты/подтверждения ---
     kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory_pro")],
+        [InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory")],
         [InlineKeyboardButton(text="✏️ Исправить", callback_data="edit_factory_profile")]
     ])
     await msg.answer(confirmation_text, reply_markup=kb)
+    await state.set_state(FactoryForm.confirm)
 
-    # --- Установи следующее состояние ---
-    await state.set_state(FactoryForm.confirm)   # Объяви это состояние в классе!
-
-
-@router.callback_query(F.data == "pay_factory", FactoryForm.confirm_pay)
-async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
-    """Process factory payment."""
+# --- Обработчик кнопки "Оплатить" ---
+@router.callback_query(F.data == "pay_factory", FactoryForm.confirm)
+async def on_pay_factory(call: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     amount = 2000
-
-    # --- Заглушка: тестовая ссылка ---
     payment_id = "test_factory_payment_id"
     pay_url = "https://example.com/pay_factory"
-    # -----------------------------------
-
     await state.update_data(payment_id=payment_id, order_data=data)
-
+    await state.set_state(FactoryForm.confirm_pay)
     await call.message.answer(
         f"Для размещения фабрики необходимо оплатить {amount}₽. Перейдите по ссылке для оплаты:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
@@ -2028,15 +2016,12 @@ async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
 
 # --- Обработчик кнопки "Проверить оплату" ---
 @router.callback_query(F.data == "check_factory_payment", FactoryForm.confirm_pay)
-async def check_factory_payment(call: CallbackQuery, state: FSMContext) -> None:
-    # Имитация успешной оплаты
+async def check_factory_payment(call: CallbackQuery, state: FSMContext):
+    data = await state.get_data()
     await state.set_state(FactoryForm.finish)
     await call.message.answer("Оплата успешно подтверждена! Ваша фабрика активирована ✅")
-    # Здесь можно добавить дальнейшую логику
-    
     # Update user role
     run("UPDATE users SET role = 'factory' WHERE tg_id = ?", (call.from_user.id,))
-    
     # Create factory
     run("""
         INSERT OR REPLACE INTO factories
@@ -2045,7 +2030,7 @@ async def check_factory_payment(call: CallbackQuery, state: FSMContext) -> None:
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now', '+1 month'))
     """, (
         call.from_user.id,
-        data['legal_name'],  # Use legal name as display name initially
+        data['legal_name'],
         data['inn'],
         data['legal_name'],
         data['address'],
