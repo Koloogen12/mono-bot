@@ -1994,12 +1994,12 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
     # Payment button
     
     async def send_factory_pay_keyboard(msg: Message, state: FSMContext, confirmation_text: str):
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory"),
-        InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_factory")
-    ]])
-    await state.set_state(FactoryForm.confirm_pay)
-    await msg.answer(confirmation_text, reply_markup=kb)
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory"),
+            InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_factory")
+        ]])
+        await state.set_state(FactoryForm.confirm_pay)
+        await msg.answer(confirmation_text, reply_markup=kb)
 
 @router.callback_query(F.data == "pay_factory", FactoryForm.confirm_pay)
 async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
