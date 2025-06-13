@@ -51,13 +51,17 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, Message
 from aiogram.fsm.context import FSMContext
 from payments import create_payment
 
 class TicketForm(StatesGroup):
     subject = State()
     message = State()
+
+class FactoryForm(StatesGroup):
+    confirm_pay = State()
+    next_state = State() 
 
 class ProfileEditForm(StatesGroup):
     field_selection = State()
@@ -1988,11 +1992,11 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
     )
     
     # Payment button
+    async def send_factory_pay_keyboard(msg: Message, state: FSMContext, confirmation_text: str):
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory"),
         InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_factory")
     ]])
-    
     await state.set_state(FactoryForm.confirm_pay)
     await msg.answer(confirmation_text, reply_markup=kb)
 
@@ -2000,6 +2004,30 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
 async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
     """Process factory payment."""
     data = await state.get_data()
+    amount = 2000
+
+    # --- Заглушка: тестовая ссылка ---
+    payment_id = "test_factory_payment_id"
+    pay_url = "https://example.com/pay_factory"
+    # -----------------------------------
+
+    await state.update_data(payment_id=payment_id, order_data=data)
+
+    await call.message.answer(
+        f"Для размещения фабрики необходимо оплатить {amount}₽. Перейдите по ссылке для оплаты:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
+            [InlineKeyboardButton(text="Проверить оплату", callback_data="check_factory_payment")]
+        ])
+    )
+
+# --- Обработчик кнопки "Проверить оплату" ---
+@router.callback_query(F.data == "check_factory_payment", FactoryForm.confirm_pay)
+async def check_factory_payment(call: CallbackQuery, state: FSMContext) -> None:
+    # Имитация успешной оплаты
+    await state.set_state(FactoryForm.finish)
+    await call.message.answer("Оплата успешно подтверждена! Ваша фабрика активирована ✅")
+    # Здесь можно добавить дальнейшую логику
     
     # Update user role
     run("UPDATE users SET role = 'factory' WHERE tg_id = ?", (call.from_user.id,))
@@ -2317,30 +2345,35 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
             await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
     
     @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
-    async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
-        """Init payment for order placement."""
-        data = await state.get_data()
-        user_id = call.from_user.id
-        amount = 700
-        description = "Оплата размещения заказа на платформе"
-        return_url = "https://t.me/your_bot_username"  # замени на свой
-    
-        # --- ЗАГЛУШКА для теста без платежей ---
-        payment_id = "test_payment_id"
-        pay_url = "https://example.com/pay"
-        # --------------------------------------
-    
-        # Сохраняем payment_id и параметры заказа во временное состояние FSM
-        await state.update_data(payment_id=payment_id, order_data=data)
-    
-        await call.message.answer(
-            f"Для размещения заказа необходимо оплатить {amount}₽. "
-            f"Перейдите по ссылке для оплаты:",
-            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
-                [InlineKeyboardButton(text="Проверить оплату", callback_data="check_order_payment")]
-            ])
-        )
+async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
+    """Init payment for order placement."""
+    data = await state.get_data()
+    user_id = call.from_user.id
+    amount = 700
+    description = "Оплата размещения заказа на платформе"
+    return_url = "https://t.me/your_bot_username"  # замени на свой
+
+    # --- ЗАГЛУШКА для теста без платежей ---
+    payment_id = "test_payment_id"
+    pay_url = "https://example.com/pay"
+    # --------------------------------------
+
+    # Сохраняем payment_id и параметры заказа во временное состояние FSM
+    await state.update_data(payment_id=payment_id, order_data=data)
+
+    await call.message.answer(
+        f"Для размещения заказа необходимо оплатить {amount}₽. "
+        f"Перейдите по ссылке для оплаты:",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
+            [InlineKeyboardButton(text="Проверить оплату", callback_data="check_order_payment")]
+        ])
+    )
+
+@router.callback_query(F.data == "check_order_payment", BuyerForm.confirm_pay)
+async def check_order_payment(call: CallbackQuery, state: FSMContext):
+    await state.set_state(BuyerForm.finish)  # или другое нужное состояние!
+    await call.message.answer("Оплата успешно подтверждена! Ваш заказ принят в работу ✅")
     
     # Create order
     order_id = insert_and_get_id("""
