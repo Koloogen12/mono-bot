@@ -1992,6 +1992,7 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
     )
     
     # Payment button
+    
     async def send_factory_pay_keyboard(msg: Message, state: FSMContext, confirmation_text: str):
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory"),
