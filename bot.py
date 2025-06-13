@@ -2282,65 +2282,65 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     )
 
     # Генерируем платёж заранее для url-кнопки
-data = await state.get_data()
-user_id = msg.from_user.id
-amount = 700
-description = "Оплата размещения заказа на платформе"
-return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
-
-# --- ЗАГЛУШКА для теста без платежей ---
-payment_id = "test_payment_id"
-pay_url = "https://example.com/pay"  # можно фейковую ссылку
-# --------------------------------------
-
-# Сохраняем payment_id и все order_data во временное хранилище (FSM, Redis, БД)
-await state.update_data(payment_id=payment_id, order_data=data)
-
-kb = InlineKeyboardMarkup(inline_keyboard=[[
-    InlineKeyboardButton(text="💳 Оплатить 700 ₽", callback_data="pay_order"),
-    InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_order")
-]])
-
-await state.set_state(BuyerForm.confirm_pay)
-await msg.answer(summary, reply_markup=kb)
-
-# --- ВНЕ других функций, отдельно! ---
-@router.callback_query(F.data.startswith("download:"))
-async def download_tz(callback: CallbackQuery):
-    order_id = int(callback.data.split(":")[1])
-    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
-    file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
-
-    if file_id:
-        await callback.message.answer_document(file_id, caption="Техническое задание по заказу")
-    else:
-        await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
-
-@router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
-async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
-    """Init payment for order placement."""
     data = await state.get_data()
-    user_id = call.from_user.id
+    user_id = msg.from_user.id
     amount = 700
     description = "Оплата размещения заказа на платформе"
-    return_url = "https://t.me/your_bot_username"  # замени на свой
-
+    return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
+    
     # --- ЗАГЛУШКА для теста без платежей ---
     payment_id = "test_payment_id"
-    pay_url = "https://example.com/pay"
+    pay_url = "https://example.com/pay"  # можно фейковую ссылку
     # --------------------------------------
-
-    # Сохраняем payment_id и параметры заказа во временное состояние FSM
+    
+    # Сохраняем payment_id и все order_data во временное хранилище (FSM, Redis, БД)
     await state.update_data(payment_id=payment_id, order_data=data)
-
-    await call.message.answer(
-        f"Для размещения заказа необходимо оплатить {amount}₽. "
-        f"Перейдите по ссылке для оплаты:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
-            [InlineKeyboardButton(text="Проверить оплату", callback_data="check_order_payment")]
-        ])
-    )
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="💳 Оплатить 700 ₽", callback_data="pay_order"),
+        InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_order")
+    ]])
+    
+    await state.set_state(BuyerForm.confirm_pay)
+    await msg.answer(summary, reply_markup=kb)
+    
+    # --- ВНЕ других функций, отдельно! ---
+    @router.callback_query(F.data.startswith("download:"))
+    async def download_tz(callback: CallbackQuery):
+        order_id = int(callback.data.split(":")[1])
+        order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
+        file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
+    
+        if file_id:
+            await callback.message.answer_document(file_id, caption="Техническое задание по заказу")
+        else:
+            await callback.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
+    
+    @router.callback_query(F.data == "pay_order", BuyerForm.confirm_pay)
+    async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
+        """Init payment for order placement."""
+        data = await state.get_data()
+        user_id = call.from_user.id
+        amount = 700
+        description = "Оплата размещения заказа на платформе"
+        return_url = "https://t.me/your_bot_username"  # замени на свой
+    
+        # --- ЗАГЛУШКА для теста без платежей ---
+        payment_id = "test_payment_id"
+        pay_url = "https://example.com/pay"
+        # --------------------------------------
+    
+        # Сохраняем payment_id и параметры заказа во временное состояние FSM
+        await state.update_data(payment_id=payment_id, order_data=data)
+    
+        await call.message.answer(
+            f"Для размещения заказа необходимо оплатить {amount}₽. "
+            f"Перейдите по ссылке для оплаты:",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="Оплатить размещение", url=pay_url)],
+                [InlineKeyboardButton(text="Проверить оплату", callback_data="check_order_payment")]
+            ])
+        )
     
     # Create order
     order_id = insert_and_get_id("""
