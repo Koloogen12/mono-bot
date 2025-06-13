@@ -2282,26 +2282,27 @@ async def buyer_file(msg: Message, state: FSMContext) -> None:
     )
 
     # Генерируем платёж заранее для url-кнопки
-    data = await state.get_data()
-    user_id = msg.from_user.id
-    amount = 700
-    description = "Оплата размещения заказа на платформе"
-    return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
-    
-    payment = create_payment(amount, description, return_url, metadata={"user_id": user_id})
-    payment_id = payment.id
-    pay_url = payment.confirmation.confirmation_url
-    
-    # Сохраняем payment_id и все order_data во временное хранилище (FSM, Redis, БД)
-    await state.update_data(payment_id=payment_id, order_data=data)
-    
-    kb = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="💳 Оплатить 700 ₽", callback_data="pay_order"),
-        InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_order")
-    ]])
-    
-    await state.set_state(BuyerForm.confirm_pay)
-    await msg.answer(summary, reply_markup=kb)
+data = await state.get_data()
+user_id = msg.from_user.id
+amount = 700
+description = "Оплата размещения заказа на платформе"
+return_url = "http://t.me/themono_fabrique_bot"  # замени на свой
+
+# --- ЗАГЛУШКА для теста без платежей ---
+payment_id = "test_payment_id"
+pay_url = "https://example.com/pay"  # можно фейковую ссылку
+# --------------------------------------
+
+# Сохраняем payment_id и все order_data во временное хранилище (FSM, Redis, БД)
+await state.update_data(payment_id=payment_id, order_data=data)
+
+kb = InlineKeyboardMarkup(inline_keyboard=[[
+    InlineKeyboardButton(text="💳 Оплатить 700 ₽", callback_data="pay_order"),
+    InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_order")
+]])
+
+await state.set_state(BuyerForm.confirm_pay)
+await msg.answer(summary, reply_markup=kb)
 
 # --- ВНЕ других функций, отдельно! ---
 @router.callback_query(F.data.startswith("download:"))
@@ -2324,9 +2325,10 @@ async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
     description = "Оплата размещения заказа на платформе"
     return_url = "https://t.me/your_bot_username"  # замени на свой
 
-    payment = create_payment(amount, description, return_url, metadata={"user_id": user_id})
-    payment_id = payment.id
-    pay_url = payment.confirmation.confirmation_url
+    # --- ЗАГЛУШКА для теста без платежей ---
+    payment_id = "test_payment_id"
+    pay_url = "https://example.com/pay"
+    # --------------------------------------
 
     # Сохраняем payment_id и параметры заказа во временное состояние FSM
     await state.update_data(payment_id=payment_id, order_data=data)
