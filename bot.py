@@ -61,7 +61,9 @@ class TicketForm(StatesGroup):
 
 class FactoryForm(StatesGroup):
     confirm_pay = State()
-    next_state = State() 
+    next_state = State()
+    portfolio = State()
+    confirm = State()
 
 class ProfileEditForm(StatesGroup):
     field_selection = State()
@@ -1991,16 +1993,17 @@ async def factory_portfolio(msg: Message, state: FSMContext) -> None:
         f"✅ Приоритет в выдаче\n"
         f"✅ Поддержку менеджера"
     )
-    
-    # Payment button
-    
-    async def send_factory_pay_keyboard(msg: Message, state: FSMContext, confirmation_text: str):
-        kb = InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory"),
-            InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_factory")
-        ]])
-        await state.set_state(FactoryForm.confirm_pay)
-        await msg.answer(confirmation_text, reply_markup=kb)
+
+    # --- ВАЖНО: кнопки для оплаты/подтверждения ---
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="💳 Оплатить 2 000 ₽", callback_data="pay_factory_pro")],
+        [InlineKeyboardButton(text="✏️ Исправить", callback_data="edit_factory_profile")]
+    ])
+    await msg.answer(confirmation_text, reply_markup=kb)
+
+    # --- Установи следующее состояние ---
+    await state.set_state(FactoryForm.confirm)   # Объяви это состояние в классе!
+
 
 @router.callback_query(F.data == "pay_factory", FactoryForm.confirm_pay)
 async def factory_payment(call: CallbackQuery, state: FSMContext) -> None:
