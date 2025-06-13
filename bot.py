@@ -682,7 +682,7 @@ async def pay_sample_handler(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.answer("Сделка не найдена.")
         return
 
-    sample_cost = deal.get("sample_cost", 0)
+    sample_cost = deal["sample_cost"] if "sample_cost" in deal.keys() else 0
     if sample_cost == 0:
         # Скипаем этап оплаты, обновляем статус
         q("UPDATE deals SET deposit_paid = 1, status = ? WHERE id = ?", ("SAMPLE_PASS", deal_id))
@@ -693,7 +693,6 @@ async def pay_sample_handler(call: CallbackQuery, state: FSMContext) -> None:
         pay_url = "https://example.com/pay-sample"  # фейковая ссылка
         # --------------------------
 
-        # Сохраняем в FSM, если нужно
         await state.update_data(payment_id=payment_id, deal_id=deal_id, sample_cost=sample_cost)
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
@@ -705,27 +704,23 @@ async def pay_sample_handler(call: CallbackQuery, state: FSMContext) -> None:
             reply_markup=kb
         )
 
-# Обработка кнопки "Проверить оплату" за образец
 @router.callback_query(F.data.startswith("check_sample_payment:"))
 async def check_sample_payment(call: CallbackQuery, state: FSMContext):
     deal_id = int(call.data.split(":", 1)[1])
     user_id = call.from_user.id
 
-    # --- ЗАГЛУШКА: всегда подтверждаем оплату ---
     payment_status = "completed"
-    # --------------------------------------------
 
     deal = q1("SELECT * FROM deals WHERE id = ?", (deal_id,))
-    sample_cost = deal.get("sample_cost", 0) if deal else 0
+    # Исправлено!
+    sample_cost = deal["sample_cost"] if deal and "sample_cost" in deal.keys() else 0
 
-    # Создать запись о sample-платеже
     payment_id = insert_and_get_id("""
         INSERT INTO payments
         (user_id, type, amount, status, reference_type, reference_id)
         VALUES (?, 'sample', ?, ?, 'deal', ?)
     """, (user_id, sample_cost, payment_status, deal_id))
 
-    # Обновить статус сделки до SAMPLE_PASS и отметить оплату
     run("UPDATE deals SET deposit_paid = 1, status = 'SAMPLE_PASS' WHERE id = ?", (deal_id,))
 
     await call.message.answer("Оплата за образец подтверждена! Сделка переходит к следующему этапу ✅")
