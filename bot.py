@@ -5695,127 +5695,54 @@ async def run_webhook() -> None:
     """Start the bot in webhook mode."""
     if not WEBHOOK_BASE:
         logger.error("Error: WEBHOOK_BASE env var required for webhook mode")
-        return
-    
-    logger.info("Starting bot in webhook mode on port %s", PORT)
-    
-    # Remove any existing webhook
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Set the new webhook URL
-    webhook_url = f"{WEBHOOK_BASE}/webhook"
-    
-    # Create aiohttp app
-    app = web.Application()
-    
-    # Setup webhook route
-    webhook_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    )
-    webhook_handler.register(app, path="/webhook")
-    
-    # Set the webhook
-    await bot.set_webhook(webhook_url)
-    logger.info("Webhook set to: %s", webhook_url)
-    
-    # Setup startup callback
-    dp.startup.register(on_startup)
-    
-    # Start web server
-    setup_application(app, dp, bot=bot)
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
-    await site.start()
-    
-    # Run forever
-    await asyncio.Event().wait()
-
-async def run_polling() -> None:
-    """Start the bot in long-polling mode."""
-    logger.info("Starting bot in polling mode")
-    
-    # Remove any existing webhook
-    await bot.delete_webhook(drop_pending_updates=True)
-    
-    # Setup startup callback
-    dp.startup.register(on_startup)
-    
-    # Start polling
-    try:
-        await dp.start_polling(bot)
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by keyboard interrupt")
-    finally:
-        logger.info("Shutting down...")
-        await dp.storage.close()
-        await bot.session.close()
-
-async def main() -> None:
-    """Main entry point."""
-    if BOT_MODE == "WEBHOOK":
-        await run_webhook()
-    else:
-        await run_polling()
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped")
-    """Start the bot in webhook mode."""
-    if not WEBHOOK_BASE:
-        logger.error("Error: WEBHOOK_BASE env var required for webhook mode")
         sys.exit(1)
-    
+
     logger.info("Starting bot in webhook mode on port %s", PORT)
-    
+
     # Remove any existing webhook
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     # Set the new webhook URL
     webhook_url = f"{WEBHOOK_BASE}/webhook"
-    
+
     # Create aiohttp app
     app = web.Application()
-    
+
     # Setup webhook route
     webhook_handler = SimpleRequestHandler(
         dispatcher=dp,
         bot=bot,
     )
     webhook_handler.register(app, path="/webhook")
-    
+
     # Set the webhook
     await bot.set_webhook(webhook_url)
     logger.info("Webhook set to: %s", webhook_url)
-    
+
     # Setup startup callback
     dp.startup.register(on_startup)
-    
+
     # Start web server
     setup_application(app, dp, bot=bot)
-    
+
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
     await site.start()
-    
+
     # Run forever
     await asyncio.Event().wait()
 
 async def run_polling() -> None:
     """Start the bot in long-polling mode."""
     logger.info("Starting bot in polling mode")
-    
+
     # Remove any existing webhook
     await bot.delete_webhook(drop_pending_updates=True)
-    
+
     # Setup startup callback
     dp.startup.register(on_startup)
-    
+
     # Start polling
     try:
         await dp.start_polling(bot)
@@ -5838,6 +5765,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
+        
     """Notify matching factories about new order."""
     factories = q("""
         SELECT f.tg_id, f.name, u.notifications 
