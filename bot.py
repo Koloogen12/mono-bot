@@ -2475,7 +2475,7 @@ async def cancel_edit_proposal(call: CallbackQuery, state: FSMContext) -> None:
 #  ДОРАБОТКА: Групповые чаты для сделок
 # ---------------------------------------------------------------------------
 async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int | None:
-    """Create group chat for deal with fallback."""
+    """Create group chat for deal with improved error handling."""
     
     # Проверяем доступность модуля
     if not GROUP_CREATOR_AVAILABLE:
@@ -2505,32 +2505,40 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         
         if not api_id:
             logger.error("TELEGRAM_API_ID not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing TELEGRAM_API_ID")
             return None
             
         if not api_hash:
             logger.error("TELEGRAM_API_HASH not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing TELEGRAM_API_HASH")
             return None
             
         if not bot_token:
             logger.error("BOT_TOKEN not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing BOT_TOKEN")
             return None
         
         logger.info(f"Creating real group chat for deal {deal_id}")
         logger.info(f"Participants: buyer={buyer_id}, factory={factory_id}, admins={ADMIN_IDS}")
         
-        # Создаем реальную группу
-        chat_id, result = await create_deal_chat_real(
-            deal_id=deal_id,
-            buyer_id=buyer_id,
-            factory_id=factory_id,
-            admin_ids=ADMIN_IDS,
-            deal_title=deal['title'],
-            factory_name=deal['factory_name'],
-            buyer_name=deal['buyer_name']
-        )
+        # Создаем реальную группу в том же event loop
+        try:
+            chat_id, result = await create_deal_chat_real(
+                deal_id=deal_id,
+                buyer_id=buyer_id,
+                factory_id=factory_id,
+                admin_ids=ADMIN_IDS,
+                deal_title=deal['title'],
+                factory_name=deal['factory_name'],
+                buyer_name=deal['buyer_name']
+            )
+        except RuntimeError as e:
+            if "event loop" in str(e).lower():
+                logger.error(f"Event loop conflict in chat creation: {e}")
+                await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Event loop conflict")
+                return None
+            else:
+                raise
         
         if chat_id:
             # Проверяем, что chat_id валидный (не фейковый)
@@ -4845,7 +4853,10 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         })
 
         # Create deal chat automatically
-        asyncio.create_task(create_deal_chat(deal_id, call.from_user.id, factory_id))
+        try:
+            await create_deal_chat(deal_id, call.from_user.id, factory_id)
+        except Exception as e:
+            logger.error(f"Failed to create chat for deal {deal_id}: {e}")
         
         # Notify admins about new deal
         await notify_admins(
