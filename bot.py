@@ -5766,7 +5766,7 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
         
-   async def notify_factories(order_row, bot, q, order_caption, send_notification, logger):
+async def notify_factories(order_row, bot, q, order_caption, send_notification, logger):
     """
     Notify matching factories about new order.
     """
