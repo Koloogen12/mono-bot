@@ -42,17 +42,6 @@ Env variables
 """
 from __future__ import annotations
 
-try:
-    from group_creator import create_deal_chat_real, TelegramGroupCreator
-    GROUP_CREATOR_AVAILABLE = True
-    logger.info("Group creator module loaded successfully")
-except ImportError as e:
-    logger.error(f"Failed to import group_creator: {e}")
-    GROUP_CREATOR_AVAILABLE = False
-except Exception as e:
-    logger.error(f"Error loading group_creator: {e}")
-    GROUP_CREATOR_AVAILABLE = False
-
 import asyncio
 import logging
 import os
@@ -143,6 +132,17 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(name)s - %(message)s"
 )
 logger = logging.getLogger("fabrique-bot")
+
+try:
+    from group_creator import create_deal_chat_real, TelegramGroupCreator
+    GROUP_CREATOR_AVAILABLE = True
+    logger.info("Group creator module loaded successfully")
+except ImportError as e:
+    logger.error(f"Failed to import group_creator: {e}")
+    GROUP_CREATOR_AVAILABLE = False
+except Exception as e:
+    logger.error(f"Error loading group_creator: {e}")
+    GROUP_CREATOR_AVAILABLE = False
 
 bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
