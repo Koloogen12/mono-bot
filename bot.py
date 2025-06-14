@@ -3405,10 +3405,2438 @@ async def buyer_payment(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer("✅ Заказ размещен!")
 
 # ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Просмотр заявок и отклики фабрик
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("view_order:"))
+async def view_order_details(call: CallbackQuery) -> None:
+    """Show detailed order information."""
+    order_id = int(call.data.split(":", 1)[1])
+    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
+    
+    if not order:
+        await call.answer("Заявка не найдена", show_alert=True)
+        return
+    
+    # Check if factory can view
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (call.from_user.id,))
+    if not factory or not factory['is_pro']:
+        await call.answer("Доступ только для PRO-фабрик", show_alert=True)
+        return
+    
+    # Get proposals count
+    proposals_count = q1(
+        "SELECT COUNT(*) as cnt FROM proposals WHERE order_id = ?",
+        (order_id,)
+    )
+    
+    # Detailed view
+    detail_text = order_caption(order, detailed=True)
+    
+    if order['requirements']:
+        detail_text += f"\n\n⚠️ <b>Особые требования:</b>\n{order['requirements']}"
+    
+    detail_text += f"\n\n📊 <b>Статистика:</b>"
+    detail_text += f"\n👁 Просмотров: {order['views']}"
+    detail_text += f"\n👥 Предложений: {proposals_count['cnt']}"
+    detail_text += f"\n📅 Размещено: {order['created_at'][:16]}"
+    
+    # Check if already responded
+    has_proposal = q1(
+        "SELECT id FROM proposals WHERE order_id = ? AND factory_id = ?",
+        (order_id, call.from_user.id)
+    )
+    
+    buttons = []
+    
+    if order['file_id']:
+        buttons.append([
+            InlineKeyboardButton(text="📎 Скачать ТЗ", callback_data=f"download:{order_id}")
+        ])
+    
+    if has_proposal:
+        buttons.append([
+            InlineKeyboardButton(text="✅ Вы откликнулись", callback_data=f"view_proposal:{order_id}")
+        ])
+    else:
+        buttons.append([
+            InlineKeyboardButton(text="💌 Откликнуться", callback_data=f"lead:{order_id}")
+        ])
+    
+    buttons.append([
+        InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_leads")
+    ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await call.message.edit_text(detail_text, reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data.startswith("download:"))
+async def download_tz(call: CallbackQuery):
+    """Download technical specification file."""
+    order_id = int(call.data.split(":")[1])
+    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
+    file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
+
+    if file_id:
+        await call.message.answer_document(file_id, caption="Техническое задание по заказу")
+    else:
+        await call.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
+
+@router.callback_query(F.data.startswith("lead:"))
+async def process_lead_response(call: CallbackQuery, state: FSMContext) -> None:
+    """Start proposal creation for an order."""
+    order_id = int(call.data.split(":", 1)[1])
+    
+    # Verify factory status
+    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (call.from_user.id,))
+    if not factory:
+        await call.answer("Доступ только для PRO-фабрик", show_alert=True)
+        return
+    
+    # Check order exists and active
+    order = q1("SELECT * FROM orders WHERE id = ? AND is_active = 1", (order_id,))
+    if not order:
+        await call.answer("Заявка недоступна", show_alert=True)
+        return
+    
+    # Check if already has active deal
+    active_deal = q1("""
+        SELECT 1 FROM deals 
+        WHERE order_id = ? AND status NOT IN ('CANCELLED', 'DELIVERED')
+    """, (order_id,))
+    
+    if active_deal:
+        await call.answer("По этой заявке уже идет сделка", show_alert=True)
+        return
+    
+    # Check if already responded
+    existing_proposal = q1(
+        "SELECT * FROM proposals WHERE order_id = ? AND factory_id = ?",
+        (order_id, call.from_user.id)
+    )
+    
+    if existing_proposal:
+        await call.answer("Вы уже откликнулись на эту заявку", show_alert=True)
+        return
+    
+    await state.update_data(order_id=order_id)
+    await state.set_state(ProposalForm.price)
+    
+    await call.message.answer(
+        f"<b>Отклик на заявку #Z-{order_id}</b>\n\n"
+        f"Категория: {order['category']}\n"
+        f"Количество: {format_price(order['quantity'])} шт.\n"
+        f"Бюджет заказчика: {format_price(order['budget'])} ₽/шт.\n\n"
+        f"Ваша цена за единицу (₽):",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await call.answer()
+
+@router.message(ProposalForm.price)
+async def proposal_price(msg: Message, state: FSMContext) -> None:
+    """Process proposal price."""
+    price = parse_digits(msg.text or "")
+    if not price or price < 1:
+        await msg.answer("❌ Укажите корректную цену:")
+        return
+    
+    data = await state.get_data()
+    order = q1("SELECT quantity FROM orders WHERE id = ?", (data['order_id'],))
+    
+    if order:
+        total = price * order['quantity']
+        await msg.answer(f"Общая сумма: {format_price(total)} ₽")
+    
+    await state.update_data(price=price)
+    await state.set_state(ProposalForm.lead_time)
+    await msg.answer("Срок изготовления (дней):")
+
+@router.message(ProposalForm.lead_time)
+async def proposal_lead_time(msg: Message, state: FSMContext) -> None:
+    """Process lead time."""
+    days = parse_digits(msg.text or "")
+    if not days or days < 1:
+        await msg.answer("❌ Укажите количество дней:")
+        return
+    
+    await state.update_data(lead_time=days)
+    await state.set_state(ProposalForm.sample_cost)
+    await msg.answer(
+        "Стоимость образца (₽)\n"
+        "Введите 0, если образец бесплатный:"
+    )
+
+@router.message(ProposalForm.sample_cost)
+async def proposal_sample_cost(msg: Message, state: FSMContext) -> None:
+    """Process sample cost."""
+    cost = parse_digits(msg.text or "0")
+    if cost is None or cost < 0:
+        await msg.answer("❌ Укажите корректную стоимость (или 0):")
+        return
+    
+    await state.update_data(sample_cost=cost)
+    await state.set_state(ProposalForm.message)
+    await msg.answer(
+        "Добавьте сообщение для заказчика.\n"
+        "Расскажите о своих преимуществах, опыте с подобными заказами:\n\n"
+        "(или напишите «—» чтобы пропустить)"
+    )
+
+@router.message(ProposalForm.message)
+async def proposal_message(msg: Message, state: FSMContext) -> None:
+    """Process proposal message."""
+    message = ""
+    if msg.text and msg.text not in ["—", "-", "–"]:
+        message = msg.text.strip()
+    
+    data = await state.get_data()
+    data['message'] = message
+    
+    # Get order details
+    order = q1("SELECT * FROM orders WHERE id = ?", (data['order_id'],))
+    if not order:
+        await msg.answer("Ошибка: заказ не найден")
+        await state.clear()
+        return
+    
+    # Show confirmation
+    total = data['price'] * order['quantity']
+    
+    confirm_text = (
+        "<b>Проверьте ваше предложение:</b>\n\n"
+        f"Заявка: #Z-{order['id']}\n"
+        f"Цена за единицу: {format_price(data['price'])} ₽\n"
+        f"Общая сумма: {format_price(total)} ₽\n"
+        f"Срок: {data['lead_time']} дней\n"
+        f"Образец: {format_price(data['sample_cost'])} ₽\n"
+    )
+    
+    if message:
+        confirm_text += f"\n💬 Сообщение:\n{message[:200]}"
+        if len(message) > 200:
+            confirm_text += "..."
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Отправить", callback_data="confirm_proposal"),
+        InlineKeyboardButton(text="✏️ Изменить", callback_data="edit_proposal")
+    ]])
+    
+    await msg.answer(confirm_text, reply_markup=kb)
+
+@router.callback_query(F.data == "confirm_proposal")
+async def confirm_proposal(call: CallbackQuery, state: FSMContext) -> None:
+    """Confirm and submit proposal."""
+    data = await state.get_data()
+    
+    # Verify order still available
+    order = q1("SELECT * FROM orders WHERE id = ? AND is_active = 1", (data['order_id'],))
+    if not order:
+        await call.answer("Заявка уже недоступна", show_alert=True)
+        await state.clear()
+        return
+    
+    # Insert proposal
+    try:
+        proposal_id = insert_and_get_id("""
+            INSERT INTO proposals
+            (order_id, factory_id, price, lead_time, sample_cost, message)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            data['order_id'],
+            call.from_user.id,
+            data['price'],
+            data['lead_time'],
+            data['sample_cost'],
+            data.get('message', '')
+        ))
+        
+        # Get factory info
+        factory = q1("SELECT * FROM factories WHERE tg_id = ?", (call.from_user.id,))
+        
+        # Track event
+        track_event(call.from_user.id, 'proposal_sent', {
+            'order_id': data['order_id'],
+            'price': data['price'],
+            'lead_time': data['lead_time']
+        })
+        
+        await call.message.edit_text(
+            "✅ <b>Предложение отправлено!</b>\n\n"
+            "Заказчик получил уведомление и рассмотрит ваше предложение.\n"
+            "Мы сообщим вам о решении."
+        )
+        
+        # Notify buyer
+        proposal_row = dict(
+            id=proposal_id,
+            price=data['price'],
+            lead_time=data['lead_time'],
+            sample_cost=data['sample_cost'],
+            message=data.get('message', '')
+        )
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="👀 Все предложения", callback_data=f"view_proposals:{order['id']}")],
+            [InlineKeyboardButton(text="✅ Выбрать эту фабрику", callback_data=f"choose_factory:{order['id']}:{call.from_user.id}")]
+        ])
+        
+        await send_notification(
+            order['buyer_id'],
+            'new_proposal',
+            f'Новое предложение на заказ #{order["id"]}',
+            proposal_caption(proposal_row, factory),
+            {'order_id': order['id'], 'factory_id': call.from_user.id}
+        )
+        
+        asyncio.create_task(
+            bot.send_message(
+                order['buyer_id'],
+                f"💌 <b>Новое предложение на ваш заказ!</b>\n\n" +
+                order_caption(order) + "\n\n" +
+                proposal_caption(proposal_row, factory),
+                reply_markup=kb
+            )
+        )
+        
+        await state.clear()
+        await call.answer("✅ Предложение отправлено!")
+        
+    except Exception as e:
+        logger.error(f"Error creating proposal: {e}")
+        if "UNIQUE constraint failed" in str(e):
+            await call.answer("Вы уже откликались на эту заявку", show_alert=True)
+        else:
+            await call.answer("Ошибка при отправке предложения", show_alert=True)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Меню фабрики - Заявки
+# ---------------------------------------------------------------------------
+
+@router.message(Command("leads"))
+@router.message(F.text == "📂 Заявки")
+async def cmd_factory_leads(msg: Message) -> None:
+    """Show available leads for factory."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (msg.from_user.id,))
+    
+    if not factory:
+        await msg.answer(
+            "❌ Доступ к заявкам только для PRO-фабрик.\n\n"
+            "Оформите подписку для получения заказов.",
+            reply_markup=kb_factory_menu() if get_user_role(msg.from_user.id) == UserRole.FACTORY else kb_main()
+        )
+        return
+    
+    # Get matching orders
+    matching_orders = q("""
+        SELECT o.*, 
+               (SELECT COUNT(*) FROM proposals p WHERE p.order_id = o.id) as proposals_count,
+               (SELECT COUNT(*) FROM proposals p WHERE p.order_id = o.id AND p.factory_id = ?) as has_proposal
+        FROM orders o
+        WHERE o.paid = 1 
+          AND o.is_active = 1
+          AND o.quantity >= ? 
+          AND o.budget >= ?
+          AND (',' || ? || ',') LIKE ('%,' || o.category || ',%')
+          AND NOT EXISTS (
+              SELECT 1 FROM deals d 
+              WHERE d.order_id = o.id AND d.status != 'CANCELLED'
+          )
+        ORDER BY o.created_at DESC
+        LIMIT 20
+    """, (
+        msg.from_user.id,
+        factory['min_qty'],
+        factory['avg_price'],
+        factory['categories']
+    ))
+    
+    if not matching_orders:
+        await msg.answer(
+            "📭 Сейчас нет подходящих заявок.\n\n"
+            "Мы уведомим вас, когда появятся новые!",
+            reply_markup=kb_factory_menu()
+        )
+        return
+    
+    # Send header
+    await msg.answer(
+        f"<b>Доступные заявки ({len(matching_orders)})</b>\n\n"
+        f"Нажмите «Подробнее» для просмотра или «Откликнуться» для отправки предложения:",
+        reply_markup=kb_factory_menu()
+    )
+    
+    # Send orders (max 5 at once)
+    sent = 0
+    for order in matching_orders[:5]:
+        # Update views
+        run("UPDATE orders SET views = views + 1 WHERE id = ?", (order['id'],))
+        
+        buttons = []
+        
+        # First row: View and Respond
+        first_row = [
+            InlineKeyboardButton(text="👀 Подробнее", callback_data=f"view_order:{order['id']}")
+        ]
+        
+        if order['has_proposal']:
+            first_row.append(
+                InlineKeyboardButton(text="✅ Вы откликнулись", callback_data=f"view_proposal:{order['id']}")
+            )
+        else:
+            first_row.append(
+                InlineKeyboardButton(text="💌 Откликнуться", callback_data=f"lead:{order['id']}")
+            )
+        
+        buttons.append(first_row)
+        
+        # Second row: Competition info
+        if order['proposals_count'] > 0:
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"👥 Предложений: {order['proposals_count']}", 
+                    callback_data=f"competition:{order['id']}"
+                )
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await msg.answer(order_caption(order), reply_markup=kb)
+        sent += 1
+    
+    if len(matching_orders) > 5:
+        load_more_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📋 Показать еще", callback_data="load_more_orders:5")
+        ]])
+        await msg.answer(
+            f"Показано {sent} из {len(matching_orders)} заявок",
+            reply_markup=load_more_kb
+        )
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Меню фабрики - Аналитика
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "📊 Аналитика")
+async def cmd_factory_analytics(msg: Message) -> None:
+    """Show factory analytics."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "❌ Аналитика доступна только для PRO-фабрик.\n\n"
+            "Оформите подписку для получения детальной статистики.",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    stats = q1("""
+        SELECT 
+            COUNT(DISTINCT p.id) as total_proposals,
+            COUNT(DISTINCT CASE WHEN p.is_accepted = 1 THEN p.id END) as accepted_proposals,
+            COUNT(DISTINCT d.id) as total_deals,
+            COUNT(DISTINCT CASE WHEN d.status = 'DELIVERED' THEN d.id END) as completed_deals,
+            SUM(CASE WHEN d.status = 'DELIVERED' THEN d.amount ELSE 0 END) as total_revenue
+        FROM proposals p
+        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
+        WHERE p.factory_id = ?
+    """, (msg.from_user.id,))
+
+    if not stats or stats['total_proposals'] == 0:
+        await msg.answer(
+            "📊 <b>Аналитика</b>\n\n"
+            "На данный момент у нас недостаточно данных для отображения аналитики.\n\n"
+            "Мы собираем данные с момента вашей регистрации. "
+            "Начните откликаться на заявки, и здесь появится подробная статистика!",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    proposal_conversion = (stats['accepted_proposals'] / stats['total_proposals']) * 100 if stats['total_proposals'] > 0 else 0
+    deal_conversion = (stats['completed_deals'] / stats['total_deals']) * 100 if stats['total_deals'] > 0 else 0
+
+    analytics_text = (
+        f"📊 <b>Аналитика фабрики</b>\n\n"
+        f"<b>Предложения:</b>\n"
+        f"├ Всего отправлено: {stats['total_proposals']}\n"
+        f"├ Принято: {stats['accepted_proposals']}\n"
+        f"└ Конверсия: {proposal_conversion:.1f}%\n\n"
+        f"<b>Сделки:</b>\n"
+        f"├ Всего: {stats['total_deals']}\n"
+        f"├ Завершено: {stats['completed_deals']}\n"
+        f"└ Успешность: {deal_conversion:.1f}%\n\n"
+        f"<b>Финансы:</b>\n"
+        f"└ Общий оборот: {format_price(stats['total_revenue'] or 0)} ₽\n\n"
+    )
+
+    recent_activity = q1("""
+        SELECT 
+            COUNT(DISTINCT p.id) as recent_proposals,
+            COUNT(DISTINCT d.id) as recent_deals
+        FROM proposals p
+        LEFT JOIN deals d ON p.order_id = d.order_id AND p.factory_id = d.factory_id
+        WHERE p.factory_id = ? AND p.created_at > datetime('now', '-30 days')
+    """, (msg.from_user.id,))
+
+    analytics_text += (
+        f"<b>За последние 30 дней:</b>\n"
+        f"├ Предложений: {recent_activity['recent_proposals']}\n"
+        f"└ Новых сделок: {recent_activity['recent_deals']}"
+    )
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📈 Детальная статистика", callback_data="analytics_detailed"),
+            InlineKeyboardButton(text="📊 Рейтинг среди фабрик", callback_data="analytics_rating")
+        ]
+    ])
+    await msg.answer(analytics_text, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Меню фабрики - Рейтинг
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "⭐ Рейтинг")
+async def cmd_factory_rating(msg: Message) -> None:
+    """Show factory rating."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "Профиль фабрики не найден",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    if factory['rating_count'] == 0:
+        await msg.answer(
+            "⭐ <b>Рейтинг</b>\n\n"
+            "У вас еще нет оценок. Не расстраивайтесь, в ближайшее время "
+            "мы найдем для вас заказ и ваш рейтинг вырастет!\n\n"
+            "💡 <b>Как получить высокий рейтинг:</b>\n"
+            "• Качественно выполняйте заказы\n"
+            "• Соблюдайте сроки\n"
+            "• Поддерживайте связь с заказчиками\n"
+            "• Предоставляйте фото процесса производства",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    ratings = q("""
+        SELECT r.*, o.title, u.full_name as buyer_name
+        FROM ratings r
+        JOIN deals d ON r.deal_id = d.id
+        JOIN orders o ON d.order_id = o.id
+        JOIN users u ON r.buyer_id = u.tg_id
+        WHERE r.factory_id = ?
+        ORDER BY r.created_at DESC
+        LIMIT 5
+    """, (msg.from_user.id,))
+
+    rating_text = (
+        f"⭐ <b>Ваш рейтинг: {factory['rating']:.1f}/5.0</b>\n"
+        f"📊 Основан на {factory['rating_count']} отзывах\n\n"
+        f"<b>Последние отзывы:</b>\n"
+    )
+
+    for rating in ratings:
+        stars = "⭐" * rating['rating']
+        rating_text += (
+            f"\n{stars} ({rating['rating']}/5)\n"
+            f"Заказ: {rating['title'][:30]}...\n"
+            f"От: {rating['buyer_name']}\n"
+        )
+        if rating['comment']:
+            rating_text += f"💬 {rating['comment'][:50]}...\n"
+
+    position = q1("""
+        SELECT COUNT(*) + 1 as position
+        FROM factories
+        WHERE rating > ? AND rating_count > 0
+    """, (factory['rating'],))
+
+    if position:
+        rating_text += f"\n🏆 Ваша позиция: #{position['position']} среди всех фабрик"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📋 Все отзывы", callback_data="view_all_ratings")]
+    ])
+    await msg.answer(rating_text, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Меню фабрики - Баланс
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "💳 Баланс")
+async def cmd_factory_balance(msg: Message) -> None:
+    """Show factory balance."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
+    if not factory:
+        await msg.answer(
+            "Профиль фабрики не найден",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    active_deals_sum = q1("""
+        SELECT SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ? AND status IN ('PRODUCTION', 'READY_TO_SHIP', 'IN_TRANSIT')
+    """, (msg.from_user.id,))
+
+    completed_revenue = q1("""
+        SELECT SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ? AND status = 'DELIVERED'
+    """, (msg.from_user.id,))
+
+    pending_payments = q1("""
+        SELECT SUM(amount * 0.7) as total
+        FROM deals
+        WHERE factory_id = ? AND status = 'READY_TO_SHIP' AND final_paid = 0
+    """, (msg.from_user.id,))
+
+    current_balance = active_deals_sum['total'] or 0
+    total_earned = completed_revenue['total'] or 0
+    pending_amount = pending_payments['total'] or 0
+
+    if current_balance == 0 and total_earned == 0:
+        await msg.answer(
+            "💳 <b>Баланс</b>\n\n"
+            "Здесь будет отображаться ваш баланс, равный сумме принятых "
+            "в работу заказов, а также статистика по выплатам.\n\n"
+            "Начните выполнять заказы, и ваша финансовая статистика появится здесь!",
+            reply_markup=kb_factory_menu()
+        )
+        return
+
+    balance_text = (
+        f"💳 <b>Финансы</b>\n\n"
+        f"<b>Текущий баланс:</b>\n"
+        f"💰 В работе: {format_price(current_balance)} ₽\n"
+    )
+
+    if pending_amount > 0:
+        balance_text += f"⏳ Ожидается: {format_price(int(pending_amount))} ₽\n"
+
+    balance_text += (
+        f"\n<b>Статистика:</b>\n"
+        f"✅ Всего заработано: {format_price(total_earned)} ₽\n"
+    )
+
+    deals_breakdown = q("""
+        SELECT status, COUNT(*) as count, SUM(amount) as total
+        FROM deals
+        WHERE factory_id = ?
+        GROUP BY status
+    """, (msg.from_user.id,))
+
+    if deals_breakdown:
+        balance_text += f"\n<b>Сделки по статусам:</b>\n"
+        for deal in deals_breakdown:
+            status_names = {
+                'PRODUCTION': '🔄 Производство',
+                'READY_TO_SHIP': '📦 Готово к отправке',
+                'IN_TRANSIT': '🚚 В пути',
+                'DELIVERED': '✅ Доставлено'
+            }
+            status_name = status_names.get(deal['status'], deal['status'])
+            balance_text += f"{status_name}: {deal['count']} ({format_price(deal['total'])} ₽)\n"
+
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="📊 История платежей", callback_data="payment_history"),
+            InlineKeyboardButton(text="📈 Динамика доходов", callback_data="revenue_chart")
+        ]
+    ])
+    await msg.answer(balance_text, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Мои сделки (универсальная функция)
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "💼 Мои сделки")
+async def cmd_my_deals(msg: Message) -> None:
+    """Show user's deals."""
+    user_role = get_user_role(msg.from_user.id)
+    
+    if user_role == UserRole.FACTORY:
+        deals = q("""
+            SELECT d.*, o.title, o.category, o.quantity
+            FROM deals d
+            JOIN orders o ON d.order_id = o.id
+            WHERE d.factory_id = ?
+            ORDER BY 
+                CASE d.status 
+                    WHEN 'DRAFT' THEN 1
+                    WHEN 'SAMPLE_PASS' THEN 2
+                    WHEN 'PRODUCTION' THEN 3
+                    WHEN 'READY_TO_SHIP' THEN 4
+                    WHEN 'IN_TRANSIT' THEN 5
+                    WHEN 'DELIVERED' THEN 6
+                    ELSE 7
+                END,
+                d.created_at DESC
+        """, (msg.from_user.id,))
+    elif user_role == UserRole.BUYER:
+        deals = q("""
+            SELECT d.*, o.title, o.category, o.quantity, f.name as factory_name
+            FROM deals d
+            JOIN orders o ON d.order_id = o.id
+            JOIN factories f ON d.factory_id = f.tg_id
+            WHERE d.buyer_id = ?
+            ORDER BY 
+                CASE d.status 
+                    WHEN 'DRAFT' THEN 1
+                    WHEN 'SAMPLE_PASS' THEN 2
+                    WHEN 'PRODUCTION' THEN 3
+                    WHEN 'READY_TO_SHIP' THEN 4
+                    WHEN 'IN_TRANSIT' THEN 5
+                    WHEN 'DELIVERED' THEN 6
+                    ELSE 7
+                END,
+                d.created_at DESC
+        """, (msg.from_user.id,))
+    else:
+        await msg.answer("Доступ запрещен", reply_markup=kb_main())
+        return
+    
+    if not deals:
+        await msg.answer(
+            "У вас пока нет активных сделок.",
+            reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
+        )
+        return
+        
+    # Группировка сделок по статусу
+    active_deals = [d for d in deals if d['status'] not in ['DELIVERED', 'CANCELLED']]
+    completed_deals = [d for d in deals if d['status'] == 'DELIVERED']
+
+    response = "<b>Ваши сделки</b>\n\n"
+
+    if active_deals:
+        response += f"🔄 <b>Активные ({len(active_deals)})</b>\n"
+        for deal in active_deals[:3]:
+            status = OrderStatus(deal['status'])
+            title = deal['title'] if deal['title'] else f"Заказ #{deal['order_id']}"
+            response += f"\n#{deal['id']} - {title}\n"
+            response += f"Статус: {status.value}\n"
+            if user_role == UserRole.BUYER:
+                response += f"Фабрика: {deal['factory_name']}\n"
+
+        if len(active_deals) > 3:
+            response += f"\n... и еще {len(active_deals) - 3}\n"
+
+    if completed_deals:
+        response += f"\n\n✅ <b>Завершенные ({len(completed_deals)})</b>"
+
+    await msg.answer(
+        response,
+        reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
+    )
+
+    # Отправка детальных карточек по активным сделкам (макс 5)
+    for deal in active_deals[:5]:
+        await send_deal_card(msg.from_user.id, deal, user_role)
+
+async def send_deal_card(user_id: int, deal: dict, user_role: UserRole):
+    """Send deal status card with actions."""
+    status = OrderStatus(deal['status'])
+    caption = deal_status_caption(dict(deal))
+
+    buttons = []
+
+    # Для покупателя
+    if user_role == UserRole.BUYER:
+        if status == OrderStatus.DRAFT and not deal['deposit_paid']:
+            buttons.append([
+                InlineKeyboardButton(text="💳 Оплатить образец", callback_data=f"pay_sample:{deal['id']}")
+            ])
+        elif status == OrderStatus.SAMPLE_PASS and not deal['deposit_paid']:
+            buttons.append([
+                InlineKeyboardButton(text="💳 Внести предоплату 30%", callback_data=f"pay_deposit:{deal['id']}")
+            ])
+        elif status == OrderStatus.READY_TO_SHIP and not deal['final_paid']:
+            buttons.append([
+                InlineKeyboardButton(text="💳 Доплатить 70%", callback_data=f"pay_final:{deal['id']}")
+            ])
+        elif status == OrderStatus.IN_TRANSIT:
+            buttons.append([
+                InlineKeyboardButton(text="✅ Подтвердить получение", callback_data=f"confirm_delivery:{deal['id']}")
+            ])
+        elif status == OrderStatus.DELIVERED:
+            rating = q1("SELECT id FROM ratings WHERE deal_id = ? AND buyer_id = ?", (deal['id'], user_id))
+            if not rating:
+                buttons.append([
+                    InlineKeyboardButton(text="⭐ Оставить отзыв", callback_data=f"rate_deal:{deal['id']}")
+                ])
+
+    # Для фабрики
+    elif user_role == UserRole.FACTORY:
+        if status == OrderStatus.DRAFT and deal['deposit_paid']:
+            buttons.append([
+                InlineKeyboardButton(text="📸 Загрузить фото образца", callback_data=f"upload_sample:{deal['id']}")
+            ])
+        elif status == OrderStatus.PRODUCTION:
+            buttons.append([
+                InlineKeyboardButton(text="📸 Фото производства", callback_data=f"upload_production:{deal['id']}"),
+                InlineKeyboardButton(text="📦 Готово к отправке", callback_data=f"ready_to_ship:{deal['id']}")
+            ])
+        elif status == OrderStatus.READY_TO_SHIP and deal['final_paid'] and not deal['tracking_num']:
+            buttons.append([
+                InlineKeyboardButton(text="🚚 Добавить трек-номер", callback_data=f"add_tracking:{deal['id']}")
+            ])
+    
+    # Common actions - ГЛАВНОЕ: добавляем кнопку перехода в чат
+    buttons.append([
+        InlineKeyboardButton(text="💬 Перейти в чат", callback_data=f"deal_chat:{deal['id']}")
+    ])
+    
+    if status not in [OrderStatus.DELIVERED, OrderStatus.CANCELLED]:
+        buttons.append([
+            InlineKeyboardButton(text="🚫 Отменить сделку", callback_data=f"cancel_deal:{deal['id']}")
+        ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    
+    await bot.send_message(user_id, caption, reply_markup=kb)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Обработчики для просмотра предложений
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("view_proposals:"))
+async def view_order_proposals(call: CallbackQuery) -> None:
+    """Show all proposals for specific order."""
+    order_id = int(call.data.split(":", 1)[1])
+    
+    # Verify ownership
+    order = q1("SELECT * FROM orders WHERE id = ? AND buyer_id = ?", (order_id, call.from_user.id))
+    if not order:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    
+    # Get all proposals
+    proposals = q("""
+        SELECT p.*, f.name, f.rating, f.rating_count, f.completed_orders
+        FROM proposals p
+        JOIN factories f ON p.factory_id = f.tg_id
+        WHERE p.order_id = ?
+        ORDER BY p.price ASC, p.lead_time ASC
+    """, (order_id,))
+    
+    if not proposals:
+        await call.message.edit_text(
+            "По этому заказу пока нет предложений.",
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_orders")
+            ]])
+        )
+        return
+    
+    await call.message.edit_text(
+        f"<b>Предложения по заказу #Z-{order_id}</b>\n"
+        f"Всего предложений: {len(proposals)}\n\n"
+        f"Отсортировано по цене ⬆️"
+    )
+    
+    # Send each proposal
+    for idx, prop in enumerate(proposals):
+        factory = dict(
+            name=prop['name'],
+            rating=prop['rating'],
+            rating_count=prop['rating_count'],
+            completed_orders=prop['completed_orders']
+        )
+        
+        buttons = [
+            [
+                InlineKeyboardButton(text="👤 О фабрике", callback_data=f"factory_info:{prop['factory_id']}"),
+                InlineKeyboardButton(text="✅ Выбрать", callback_data=f"choose_factory:{order_id}:{prop['factory_id']}")
+            ]
+        ]
+        
+        # Add comparison if multiple proposals
+        if len(proposals) > 1:
+            buttons.append([
+                InlineKeyboardButton(text="📊 Сравнить все", callback_data=f"compare_proposals:{order_id}")
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        caption = f"<b>#{idx + 1}</b> " + proposal_caption(prop, factory)
+        await call.message.answer(caption, reply_markup=kb)
+    
+    await call.answer()
+
+@router.callback_query(F.data.startswith("choose_factory:"))
+async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
+    """Choose factory and create deal."""
+    parts = call.data.split(":")
+    order_id = int(parts[1])
+    factory_id = int(parts[2])
+    
+    # Verify ownership
+    order = q1("SELECT * FROM orders WHERE id = ? AND buyer_id = ?", (order_id, call.from_user.id))
+    if not order:
+        await call.answer("Заказ не найден", show_alert=True)
+        return
+    
+    # Check if deal already exists
+    existing_deal = q1("""
+        SELECT * FROM deals 
+        WHERE order_id = ? AND status NOT IN ('CANCELLED')
+    """, (order_id,))
+    
+    if existing_deal:
+        await call.answer("По этому заказу уже есть активная сделка", show_alert=True)
+        return
+    
+    # Get proposal details
+    proposal = q1("""
+        SELECT p.*, f.name as factory_name
+        FROM proposals p
+        JOIN factories f ON p.factory_id = f.tg_id
+        WHERE p.order_id = ? AND p.factory_id = ?
+    """, (order_id, factory_id))
+    
+    if not proposal:
+        await call.answer("Предложение не найдено", show_alert=True)
+        return
+    
+    # Calculate total amount
+    total_amount = proposal['price'] * order['quantity']
+    
+    # Create deal
+    deal_id = insert_and_get_id("""
+        INSERT INTO deals
+        (order_id, factory_id, buyer_id, amount, status, sample_cost)
+        VALUES (?, ?, ?, ?, 'DRAFT', ?)
+    """, (order_id, factory_id, call.from_user.id, total_amount, proposal['sample_cost']))
+    
+    # Update proposal status
+    run("UPDATE proposals SET is_accepted = 1 WHERE order_id = ? AND factory_id = ?", 
+        (order_id, factory_id))
+    
+    # Deactivate order
+    run("UPDATE orders SET is_active = 0 WHERE id = ?", (order_id,))
+    
+    # Create deal chat
+    chat_id = await create_deal_chat(deal_id, call.from_user.id, factory_id)
+    
+    # Track event
+    track_event(call.from_user.id, 'deal_created', {
+        'deal_id': deal_id,
+        'order_id': order_id,
+        'factory_id': factory_id,
+        'amount': total_amount
+    })
+    
+    # Notify admins about new deal
+    await notify_admins(
+        'deal_created',
+        '🤝 Новая сделка создана!',
+        f"Сделка #{deal_id}\n"
+        f"Заказ: #Z-{order_id} - {order['title']}\n"
+        f"Фабрика: {proposal['factory_name']}\n"
+        f"Сумма: {format_price(total_amount)} ₽",
+        {
+            'buyer_id': call.from_user.id,
+            'factory_id': factory_id,
+            'category': order['category'],
+            'quantity': order['quantity']
+        }
+    )
+    
+    # Send confirmation
+    deal_text = (
+        f"✅ <b>Сделка создана!</b>\n\n"
+        f"Сделка: #{deal_id}\n"
+        f"Фабрика: {proposal['factory_name']}\n"
+        f"Сумма: {format_price(total_amount)} ₽\n\n"
+        f"<b>Следующий шаг:</b>\n"
+        f"{ORDER_STATUS_DESCRIPTIONS[OrderStatus.DRAFT]}"
+    )
+    
+    if proposal['sample_cost'] > 0:
+        deal_text += f"\n\nСтоимость образца: {format_price(proposal['sample_cost'])} ₽"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💳 Оплатить образец", callback_data=f"pay_sample:{deal_id}")
+        ]])
+    else:
+        deal_text += f"\n\n✅ Образец бесплатный!"
+        kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="💬 Перейти в чат", callback_data=f"deal_chat:{deal_id}")
+        ]])
+    
+    await call.message.edit_text(deal_text, reply_markup=kb)
+    
+    # Notify factory
+    await send_notification(
+        factory_id,
+        'deal_created',
+        'Ваше предложение выбрано!',
+        f'Заказчик выбрал ваше предложение по заказу #Z-{order_id}\n'
+        f'Сумма сделки: {format_price(total_amount)} ₽\n\n'
+        f'Чат по сделке уже создан.',
+        {'deal_id': deal_id, 'order_id': order_id}
+    )
+    
+    # Notify other factories that didn't win
+    other_proposals = q("""
+        SELECT factory_id FROM proposals 
+        WHERE order_id = ? AND factory_id != ?
+    """, (order_id, factory_id))
+    
+    for prop in other_proposals:
+        await send_notification(
+            prop['factory_id'],
+            'proposal_rejected',
+            'Предложение не выбрано',
+            f'К сожалению, заказчик выбрал другую фабрику для заказа #Z-{order_id}',
+            {'order_id': order_id}
+        )
+    
+    await call.answer("✅ Сделка создана!")
+
+# ---------------------------------------------------------------------------
 #  Background tasks для уведомлений фабрик
 # ---------------------------------------------------------------------------
 
 async def notify_factories_about_order(order_row: sqlite3.Row) -> int:
+    """Notify matching factories about new order."""
+    factories = q("""
+        SELECT f.tg_id, f.name, u.notifications 
+        FROM factories f
+        JOIN users u ON f.tg_id = u.tg_id
+        WHERE f.is_pro = 1
+          AND f.min_qty <= ?
+          AND f.avg_price <= ?
+          AND (',' || f.categories || ',') LIKE ('%,' || ? || ',%')
+          AND u.is_active = 1
+          AND u.is_banned = 0
+    """, (order_row['quantity'], order_row['budget'], order_row['category']))
+    
+    notified_count = 0
+    for factory in factories:
+        if factory['notifications']:
+            try:
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="👀 Посмотреть", callback_data=f"view_order:{order_row['id']}"),
+                    InlineKeyboardButton(text="💌 Откликнуться", callback_data=f"lead:{order_row['id']}")
+                ]])
+                
+                await bot.send_message(
+                    factory['tg_id'],
+                    f"🔥 <b>Новая заявка в вашей категории!</b>\n\n" + order_caption(order_row),
+                    reply_markup=kb
+                )
+                notified_count += 1
+                
+                # Track notification
+                await send_notification(
+                    factory['tg_id'],
+                    'new_order',
+                    'Новая заявка',
+                    f"Заявка #{order_row['id']} в категории {order_row['category']}",
+                    {'order_id': order_row['id']}
+                )
+            except Exception as e:
+                logger.error(f"Failed to notify factory {factory['tg_id']}: {e}")
+    
+    logger.info(f"Order #{order_row['id']} notified to {notified_count} factories")
+    return notified_count
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Дополнительные обработчики callback'ов
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "back_to_leads")
+async def back_to_leads(call: CallbackQuery) -> None:
+    """Go back to leads list."""
+    await call.message.delete()
+    await call.answer()
+
+@router.callback_query(F.data.startswith("view_proposal:"))
+async def view_existing_proposal(call: CallbackQuery) -> None:
+    """View existing proposal."""
+    order_id = int(call.data.split(":", 1)[1])
+    
+    proposal = q1("""
+        SELECT p.*, o.title, o.category, o.quantity
+        FROM proposals p
+        JOIN orders o ON p.order_id = o.id
+        WHERE p.order_id = ? AND p.factory_id = ?
+    """, (order_id, call.from_user.id))
+    
+    if not proposal:
+        await call.answer("Предложение не найдено", show_alert=True)
+        return
+    
+    proposal_text = (
+        f"<b>Ваше предложение на заказ #Z-{order_id}</b>\n\n"
+        f"📦 {proposal['title']}\n"
+        f"🔢 Количество: {format_price(proposal['quantity'])} шт.\n\n"
+        f"💰 Ваша цена: {format_price(proposal['price'])} ₽/шт.\n"
+        f"📅 Срок: {proposal['lead_time']} дней\n"
+        f"🧵 Образец: {format_price(proposal['sample_cost'])} ₽\n"
+    )
+    
+    if proposal['message']:
+        proposal_text += f"\n💬 Ваше сообщение:\n{proposal['message']}"
+    
+    status_text = "✅ Принято" if proposal['is_accepted'] else "⏳ Ожидает решения"
+    proposal_text += f"\n\n📊 Статус: {status_text}"
+    
+    buttons = []
+    if not proposal['is_accepted']:
+        buttons.append([
+            InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_existing_proposal:{proposal['id']}")
+        ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+    
+    await call.message.answer(proposal_text, reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data.startswith("competition:"))
+async def view_competition(call: CallbackQuery) -> None:
+    """View competition for order."""
+    order_id = int(call.data.split(":", 1)[1])
+    
+    proposals = q("""
+        SELECT COUNT(*) as total,
+               AVG(price) as avg_price,
+               MIN(price) as min_price,
+               MAX(price) as max_price,
+               AVG(lead_time) as avg_lead_time
+        FROM proposals
+        WHERE order_id = ?
+    """, (order_id,))
+    
+    if not proposals or proposals[0]['total'] == 0:
+        await call.answer("Нет данных о конкуренции", show_alert=True)
+        return
+    
+    stats = proposals[0]
+    competition_text = (
+        f"📊 <b>Конкуренция по заказу #Z-{order_id}</b>\n\n"
+        f"👥 Предложений: {stats['total']}\n"
+        f"💰 Средняя цена: {format_price(int(stats['avg_price']))} ₽\n"
+        f"💰 Мин. цена: {format_price(stats['min_price'])} ₽\n"
+        f"💰 Макс. цена: {format_price(stats['max_price'])} ₽\n"
+        f"📅 Средний срок: {int(stats['avg_lead_time'])} дней"
+    )
+    
+    await call.message.answer(competition_text)
+    await call.answer()
+
+@router.callback_query(F.data.startswith("load_more_orders:"))
+async def load_more_orders(call: CallbackQuery) -> None:
+    """Load more orders."""
+    offset = int(call.data.split(":", 1)[1])
+    
+    factory = q1("SELECT * FROM factories WHERE tg_id = ? AND is_pro = 1", (call.from_user.id,))
+    if not factory:
+        await call.answer("Доступ запрещен", show_alert=True)
+        return
+    
+    # Get more matching orders
+    matching_orders = q("""
+        SELECT o.*, 
+               (SELECT COUNT(*) FROM proposals p WHERE p.order_id = o.id) as proposals_count,
+               (SELECT COUNT(*) FROM proposals p WHERE p.order_id = o.id AND p.factory_id = ?) as has_proposal
+        FROM orders o
+        WHERE o.paid = 1 
+          AND o.is_active = 1
+          AND o.quantity >= ? 
+          AND o.budget >= ?
+          AND (',' || ? || ',') LIKE ('%,' || o.category || ',%')
+          AND NOT EXISTS (
+              SELECT 1 FROM deals d 
+              WHERE d.order_id = o.id AND d.status != 'CANCELLED'
+          )
+        ORDER BY o.created_at DESC
+        LIMIT 5 OFFSET ?
+    """, (
+        call.from_user.id,
+        factory['min_qty'],
+        factory['avg_price'],
+        factory['categories'],
+        offset
+    ))
+    
+    if not matching_orders:
+        await call.answer("Больше заявок нет", show_alert=True)
+        return
+    
+    # Send additional orders
+    for order in matching_orders:
+        buttons = []
+        
+        first_row = [
+            InlineKeyboardButton(text="👀 Подробнее", callback_data=f"view_order:{order['id']}")
+        ]
+        
+        if order['has_proposal']:
+            first_row.append(
+                InlineKeyboardButton(text="✅ Вы откликнулись", callback_data=f"view_proposal:{order['id']}")
+            )
+        else:
+            first_row.append(
+                InlineKeyboardButton(text="💌 Откликнуться", callback_data=f"lead:{order['id']}")
+            )
+        
+        buttons.append(first_row)
+        
+        if order['proposals_count'] > 0:
+            buttons.append([
+                InlineKeyboardButton(
+                    text=f"👥 Предложений: {order['proposals_count']}", 
+                    callback_data=f"competition:{order['id']}"
+                )
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await call.message.answer(order_caption(order), reply_markup=kb)
+    
+    # Update load more button
+    new_offset = offset + 5
+    total_orders = q1("""
+        SELECT COUNT(*) as cnt FROM orders o
+        WHERE o.paid = 1 
+          AND o.is_active = 1
+          AND o.quantity >= ? 
+          AND o.budget >= ?
+          AND (',' || ? || ',') LIKE ('%,' || o.category || ',%')
+          AND NOT EXISTS (
+              SELECT 1 FROM deals d 
+              WHERE d.order_id = o.id AND d.status != 'CANCELLED'
+          )
+    """, (factory['min_qty'], factory['avg_price'], factory['categories']))
+    
+    if new_offset < total_orders['cnt']:
+        new_kb = InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="📋 Показать еще", callback_data=f"load_more_orders:{new_offset}")
+        ]])
+        await call.message.edit_reply_markup(reply_markup=new_kb)
+    else:
+        await call.message.edit_text("Все заявки показаны")
+    
+    await call.answer(f"Загружено еще {len(matching_orders)} заявок")
+
+# ---------------------------------------------------------------------------
+#  Background tasks and startup
+# ---------------------------------------------------------------------------
+
+async def run_background_tasks():
+    """Run periodic background tasks."""
+    while True:
+        try:
+            # Clean up old notifications
+            run("""
+                DELETE FROM notifications 
+                WHERE is_sent = 1 
+                  AND created_at < datetime('now', '-30 days')
+            """)
+            
+            logger.info("Background cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error in background tasks: {e}")
+        
+        # Run every hour
+        await asyncio.sleep(3600)
+
+async def on_startup(bot: Bot) -> None:
+    """Run on bot startup."""
+    init_db()
+    
+    # Start background tasks
+    asyncio.create_task(run_background_tasks())
+    
+    # Set bot commands
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Главное меню"),
+        BotCommand(command="help", description="Помощь"),
+        BotCommand(command="profile", description="Мой профиль"),
+        BotCommand(command="support", description="Поддержка"),
+    ])
+    
+    logger.info("Bot startup complete ✅")
+
+# ---------------------------------------------------------------------------
+#  Profile commands
+# ---------------------------------------------------------------------------
+
+@router.message(Command("profile"))
+@router.message(F.text.in_(["👤 Профиль", "🧾 Профиль"]))
+async def cmd_profile(msg: Message) -> None:
+    """Show user profile."""
+    user = get_or_create_user(msg.from_user)
+    role = UserRole(user['role'])
+    
+    if role == UserRole.FACTORY:
+        factory = q1("SELECT * FROM factories WHERE tg_id = ?", (msg.from_user.id,))
+        if not factory:
+            await msg.answer("Профиль фабрики не найден", reply_markup=kb_main())
+            return
+        
+        # Calculate stats
+        active_deals = q1(
+            "SELECT COUNT(*) as cnt FROM deals WHERE factory_id = ? AND status NOT IN ('DELIVERED', 'CANCELLED')",
+            (msg.from_user.id,)
+        )
+        
+        total_revenue = q1(
+            "SELECT SUM(amount) as total FROM deals WHERE factory_id = ? AND status = 'DELIVERED'",
+            (msg.from_user.id,)
+        )
+        
+        profile_text = (
+            f"<b>Профиль фабрики</b>\n\n"
+            f"🏢 {factory['name']}\n"
+            f"📍 {factory['address']}\n"
+            f"🏷 ИНН: {factory['inn']}\n"
+        )
+        
+        # Categories
+        categories = factory['categories'].split(',')
+        categories_text = ", ".join([c.capitalize() for c in categories[:5]])
+        if len(categories) > 5:
+            categories_text += f" +{len(categories) - 5}"
+        profile_text += f"📦 Категории: {categories_text}\n"
+        
+        # Production capacity
+        profile_text += f"📊 Партии: {format_price(factory['min_qty'])} - {format_price(factory['max_qty'])} шт.\n"
+        profile_text += f"💰 Средняя цена: {format_price(factory['avg_price'])} ₽\n\n"
+        
+        # Stats
+        profile_text += "<b>Статистика:</b>\n"
+        if factory['rating_count'] > 0:
+            profile_text += f"⭐ Рейтинг: {factory['rating']:.1f}/5.0 ({factory['rating_count']} отзывов)\n"
+        else:
+            profile_text += "⭐ Рейтинг: нет отзывов\n"
+        
+        profile_text += f"✅ Выполнено: {factory['completed_orders']} заказов\n"
+        profile_text += f"🔄 Активных сделок: {active_deals['cnt']}\n"
+        
+        if total_revenue and total_revenue['total']:
+            profile_text += f"💵 Общий оборот: {format_price(total_revenue['total'])} ₽\n"
+        
+        # PRO status
+        profile_text += f"\n<b>Статус:</b> "
+        if factory['is_pro']:
+            if factory['pro_expires']:
+                profile_text += f"✅ PRO до {factory['pro_expires'][:10]}"
+            else:
+                profile_text += "✅ PRO (бессрочно)"
+        else:
+            profile_text += "❌ Базовый (оформите PRO для получения заявок)"
+        
+        # Action buttons
+        buttons = []
+        if not factory['is_pro']:
+            buttons.append([InlineKeyboardButton(text="💳 Оформить PRO", callback_data="upgrade_pro")])
+        
+        buttons.append([
+            InlineKeyboardButton(text="✏️ Изменить данные", callback_data="edit_profile"),
+            InlineKeyboardButton(text="📸 Фото", callback_data="manage_photos")
+        ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+        
+        await msg.answer(profile_text, reply_markup=kb)
+        
+    elif role == UserRole.BUYER:
+        # Buyer profile
+        stats = q1("""
+            SELECT 
+                COUNT(DISTINCT o.id) as total_orders,
+                COUNT(DISTINCT d.id) as total_deals,
+                SUM(CASE WHEN o.is_active = 1 THEN 1 ELSE 0 END) as active_orders
+            FROM orders o
+            LEFT JOIN deals d ON o.id = d.order_id
+            WHERE o.buyer_id = ?
+        """, (msg.from_user.id,))
+        
+        profile_text = (
+            f"<b>Профиль заказчика</b>\n\n"
+            f"👤 {user['full_name']}\n"
+            f"🆔 ID: {msg.from_user.id}\n"
+        )
+        
+        if user['phone']:
+            profile_text += f"📱 Телефон: {user['phone']}\n"
+        if user['email']:
+            profile_text += f"📧 Email: {user['email']}\n"
+        
+        profile_text += (
+            f"\n<b>Статистика:</b>\n"
+            f"📋 Всего заказов: {stats['total_orders']}\n"
+            f"✅ Завершено сделок: {stats['total_deals']}\n"
+            f"🔄 Активных заказов: {stats['active_orders']}\n"
+        )
+        
+        # Last order
+        last_order = q1(
+            "SELECT * FROM orders WHERE buyer_id = ? ORDER BY created_at DESC LIMIT 1",
+            (msg.from_user.id,)
+        )
+        
+        if last_order:
+            profile_text += f"\n📅 Последний заказ: {last_order['created_at'][:10]}"
+        
+        buttons = [[
+            InlineKeyboardButton(text="✏️ Изменить данные", callback_data="edit_profile"),
+            InlineKeyboardButton(text="📋 История заказов", callback_data="order_history")
+        ]]
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await msg.answer(profile_text, reply_markup=kb)
+        
+    else:
+        await msg.answer(
+            "У вас пока нет профиля. Выберите, кто вы:",
+            reply_markup=kb_main()
+        )
+
+# ---------------------------------------------------------------------------
+#  Settings
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "⚙️ Настройки")
+async def cmd_settings(msg: Message, state: FSMContext) -> None:
+    """Show simplified settings menu."""
+    await state.clear()
+    
+    settings_text = (
+        "<b>Настройки</b>\n\n"
+        "Управление вашим аккаунтом:"
+    )
+    
+    buttons = [
+        [
+            InlineKeyboardButton(
+                text="🗑 Удалить аккаунт", 
+                callback_data="settings:delete_account"
+            )
+        ]
+    ]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await msg.answer(settings_text, reply_markup=kb)
+
+@router.callback_query(F.data == "settings:delete_account")
+async def delete_account_confirm(call: CallbackQuery) -> None:
+    """Confirm account deletion."""
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [
+            InlineKeyboardButton(text="❌ Да, удалить", callback_data="confirm_delete_account"),
+            InlineKeyboardButton(text="✅ Отмена", callback_data="cancel_delete_account")
+        ]
+    ])
+    
+    await call.message.edit_text(
+        "⚠️ <b>Вы уверены, что хотите удалить аккаунт?</b>\n\n"
+        "Это действие необратимо. Будут удалены:\n"
+        "• Ваш профиль\n"
+        "• История заказов/предложений\n"
+        "• Все данные\n\n"
+        "Активные сделки будут завершены через поддержку.",
+        reply_markup=kb
+    )
+    await call.answer()
+
+@router.callback_query(F.data == "confirm_delete_account")
+async def delete_account_execute(call: CallbackQuery) -> None:
+    """Execute account deletion."""
+    user_id = call.from_user.id
+    
+    # Check active deals
+    active_deals = q1("""
+        SELECT COUNT(*) as cnt FROM deals 
+        WHERE (buyer_id = ? OR factory_id = ?) 
+        AND status NOT IN ('DELIVERED', 'CANCELLED')
+    """, (user_id, user_id))
+    
+    if active_deals and active_deals['cnt'] > 0:
+        await call.message.edit_text(
+            "❌ <b>Невозможно удалить аккаунт</b>\n\n"
+            f"У вас есть {active_deals['cnt']} активных сделок.\n"
+            "Завершите все сделки или обратитесь в поддержку."
+        )
+        await call.answer()
+        return
+    
+    try:
+        # Delete all user data
+        run("DELETE FROM ratings WHERE buyer_id = ? OR factory_id = ?", (user_id, user_id))
+        run("DELETE FROM proposals WHERE factory_id = ?", (user_id,))
+        run("DELETE FROM factory_photos WHERE factory_id = ?", (user_id,))
+        run("DELETE FROM factories WHERE tg_id = ?", (user_id,))
+        run("DELETE FROM orders WHERE buyer_id = ?", (user_id,))
+        run("DELETE FROM notifications WHERE user_id = ?", (user_id,))
+        run("DELETE FROM ticket_messages WHERE user_id = ?", (user_id,))
+        run("DELETE FROM tickets WHERE user_id = ?", (user_id,))
+        run("DELETE FROM analytics WHERE user_id = ?", (user_id,))
+        run("DELETE FROM users WHERE tg_id = ?", (user_id,))
+        
+        # Notify admins
+        await notify_admins(
+            'account_deleted',
+            '🗑 Аккаунт удален',
+            f"Пользователь {call.from_user.username or call.from_user.full_name} удалил свой аккаунт",
+            {'user_id': user_id}
+        )
+        
+        await call.message.edit_text(
+            "✅ <b>Аккаунт успешно удален</b>\n\n"
+            "Все ваши данные удалены из системы.\n"
+            "Спасибо за использование Mono-Fabrique!"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error deleting account {user_id}: {e}")
+        await call.message.edit_text(
+            "❌ Ошибка при удалении аккаунта.\n"
+            "Обратитесь в поддержку."
+        )
+    
+    await call.answer()
+
+@router.callback_query(F.data == "cancel_delete_account")
+async def cancel_delete_account(call: CallbackQuery) -> None:
+    """Cancel account deletion."""
+    await call.message.edit_text("✅ Удаление аккаунта отменено")
+    await call.answer()
+
+# ---------------------------------------------------------------------------
+#  Support system
+# ---------------------------------------------------------------------------
+
+@router.message(F.text == "📞 Поддержка")
+async def cmd_support(msg: Message, state: FSMContext) -> None:
+    """Show support menu."""
+    await state.clear()
+    
+    # Check for open tickets
+    open_tickets = q("""
+        SELECT COUNT(*) as cnt 
+        FROM tickets 
+        WHERE user_id = ? AND status = 'open'
+    """, (msg.from_user.id,))
+    
+    support_text = (
+        "<b>Поддержка Mono-Fabrique</b>\n\n"
+        "Мы готовы помочь вам 24/7!\n\n"
+        "📧 Email: support@mono-fabrique.ru\n"
+        "📱 Телефон: +7 (800) 123-45-67\n"
+        "💬 Telegram: @mono_fabrique_support\n\n"
+    )
+    
+    if open_tickets and open_tickets[0]['cnt'] > 0:
+        support_text += f"У вас есть {open_tickets[0]['cnt']} открытых обращений\n\n"
+    
+    support_text += "Выберите тему обращения:"
+    
+    buttons = [
+        [InlineKeyboardButton(text="❓ Общий вопрос", callback_data="ticket:general")],
+        [InlineKeyboardButton(text="💳 Проблемы с оплатой", callback_data="ticket:payment")],
+        [InlineKeyboardButton(text="📦 Вопрос по заказу", callback_data="ticket:order")],
+        [InlineKeyboardButton(text="🏭 Вопрос по работе фабрики", callback_data="ticket:factory")],
+        [InlineKeyboardButton(text="🚨 Жалоба", callback_data="ticket:complaint")],
+        [InlineKeyboardButton(text="💡 Предложение", callback_data="ticket:suggestion")]
+    ]
+    
+    if open_tickets and open_tickets[0]['cnt'] > 0:
+        buttons.append([
+            InlineKeyboardButton(
+                text="📋 Мои обращения", 
+                callback_data="my_tickets"
+            )
+        ])
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    
+    await msg.answer(support_text, reply_markup=kb)
+
+@router.callback_query(F.data.startswith("ticket:"))
+async def create_support_ticket(call: CallbackQuery, state: FSMContext) -> None:
+    """Start creating support ticket."""
+    category = call.data.split(":", 1)[1]
+    
+    category_names = {
+        'general': 'Общий вопрос',
+        'payment': 'Проблемы с оплатой',
+        'order': 'Вопрос по заказу',
+        'factory': 'Вопрос по работе фабрики',
+        'complaint': 'Жалоба',
+        'suggestion': 'Предложение'
+    }
+    
+    await state.update_data(ticket_category=category)
+    await state.set_state(TicketForm.subject)
+    
+    await call.message.answer(
+        f"<b>Создание обращения</b>\n"
+        f"Категория: {category_names.get(category, category)}\n\n"
+        f"Введите тему обращения:",
+        reply_markup=ReplyKeyboardRemove()
+    )
+    await call.answer()
+
+@router.message(TicketForm.subject)
+async def ticket_subject(msg: Message, state: FSMContext) -> None:
+    """Process ticket subject."""
+    if not msg.text or len(msg.text) < 5:
+        await msg.answer("Введите более подробную тему (минимум 5 символов):")
+        return
+    
+    await state.update_data(subject=msg.text.strip())
+    await state.set_state(TicketForm.message)
+    await msg.answer("Опишите вашу проблему или вопрос подробно:")
+
+@router.message(TicketForm.message)
+async def ticket_message(msg: Message, state: FSMContext) -> None:
+    """Process ticket message and create ticket."""
+    if not msg.text or len(msg.text) < 20:
+        await msg.answer("Пожалуйста, опишите проблему подробнее (минимум 20 символов):")
+        return
+    
+    data = await state.get_data()
+    
+    # Determine priority based on category
+    priority = 'normal'
+    if data['ticket_category'] in ['payment', 'complaint']:
+        priority = 'high'
+    
+    # Create ticket
+    ticket_id = insert_and_get_id("""
+        INSERT INTO tickets (user_id, subject, category, priority, status)
+        VALUES (?, ?, ?, ?, 'open')
+    """, (msg.from_user.id, data['subject'], data['ticket_category'], priority))
+    
+    # Create first message
+    insert_and_get_id("""
+        INSERT INTO ticket_messages (ticket_id, user_id, message)
+        VALUES (?, ?, ?)
+    """, (ticket_id, msg.from_user.id, msg.text.strip()))
+    
+    # Get user info
+    user = get_or_create_user(msg.from_user)
+    
+    # Notify admins about new ticket
+    priority_emoji = {'high': '🔴', 'normal': '🟡'}.get(priority, '🟢')
+    
+    await notify_admins(
+        'new_ticket',
+        f'{priority_emoji} Новый тикет #{ticket_id}',
+        f"От: @{msg.from_user.username or user['full_name']}\n"
+        f"Категория: {data['ticket_category']}\n"
+        f"Тема: {data['subject']}\n\n"
+        f"Сообщение:\n{msg.text[:200]}{'...' if len(msg.text) > 200 else ''}",
+        {
+            'ticket_id': ticket_id,
+            'user_id': msg.from_user.id,
+            'priority': priority
+        },
+        [[
+            InlineKeyboardButton(text="💬 Ответить", url=f"tg://user?id={msg.from_user.id}")
+        ]]
+    )
+    
+    await state.clear()
+    await msg.answer(
+        f"✅ <b>Обращение #{ticket_id} создано!</b>\n\n"
+        f"Мы ответим вам в течение 24 часов.\n"
+        f"Вы получите уведомление о нашем ответе.\n\n"
+        f"Спасибо за обращение!",
+        reply_markup=kb_main(get_user_role(msg.from_user.id))
+    )
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Дополнительные команды и обработчики
+# ---------------------------------------------------------------------------
+
+@router.message(F.text.in_(["ℹ️ Как работает", "ℹ Как работает"]))
+async def cmd_how_it_works(msg: Message) -> None:
+    """Explain how the platform works."""
+    await msg.answer(
+        "<b>Как работает Mono-Fabrique:</b>\n\n"
+        "<b>Для заказчиков:</b>\n"
+        "1️⃣ Размещаете заказ (700 ₽)\n"
+        "2️⃣ Получаете предложения от фабрик\n"
+        "3️⃣ Выбираете лучшее предложение\n"
+        "4️⃣ Оплачиваете через безопасный Escrow\n"
+        "5️⃣ Контролируете производство\n"
+        "6️⃣ Получаете готовый товар\n\n"
+        "<b>Для фабрик:</b>\n"
+        "1️⃣ Оформляете PRO-подписку (2000 ₽/мес)\n"
+        "2️⃣ Получаете подходящие заявки\n"
+        "3️⃣ Отправляете предложения\n"
+        "4️⃣ Заключаете сделки\n"
+        "5️⃣ Производите и отправляете\n"
+        "6️⃣ Получаете оплату через Escrow\n\n"
+        "💎 <b>Преимущества:</b>\n"
+        "• Прямые контакты без посредников\n"
+        "• Безопасные сделки\n"
+        "• Рейтинги и отзывы\n"
+        "• Поддержка на всех этапах",
+        reply_markup=kb_main(get_user_role(msg.from_user.id))
+    )
+
+@router.message(F.text.in_(["💰 Тарифы", "🧾 Тарифы"]))
+async def cmd_tariffs(msg: Message) -> None:
+    """Show tariffs."""
+    await msg.answer(
+        "<b>Тарифы Mono-Fabrique:</b>\n\n"
+        "🏭 <b>Для фабрик:</b>\n"
+        "• PRO-подписка: 2 000 ₽/месяц\n"
+        "• Безлимитные отклики на заявки\n"
+        "• Приоритет в поиске\n"
+        "• Расширенная аналитика\n"
+        "• Поддержка 24/7\n\n"
+        "🛍 <b>Для заказчиков:</b>\n"
+        "• Размещение заказа: 700 ₽\n"
+        "• Неограниченные предложения\n"
+        "• Безопасный Escrow\n"
+        "• Контроль на всех этапах\n"
+        "• Поддержка сделки\n\n"
+        "💳 <b>Комиссии:</b>\n"
+        "Мы НЕ берем комиссию с суммы сделки!\n"
+        "Только фиксированные платежи.",
+        reply_markup=kb_main(get_user_role(msg.from_user.id))
+    )
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Редактирование профиля фабрики
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "edit_profile")
+async def edit_profile_start(call: CallbackQuery, state: FSMContext) -> None:
+    """Start profile editing."""
+    user_role = get_user_role(call.from_user.id)
+    
+    if user_role == UserRole.FACTORY:
+        factory = q1("SELECT * FROM factories WHERE tg_id = ?", (call.from_user.id,))
+        if not factory:
+            await call.answer("Профиль не найден", show_alert=True)
+            return
+        
+        buttons = [
+            [InlineKeyboardButton(text="🏢 Название", callback_data="edit_field:name")],
+            [InlineKeyboardButton(text="📍 Адрес", callback_data="edit_field:address")],
+            [InlineKeyboardButton(text="📦 Категории", callback_data="edit_field:categories")],
+            [InlineKeyboardButton(text="📊 Мин. партия", callback_data="edit_field:min_qty")],
+            [InlineKeyboardButton(text="📊 Макс. партия", callback_data="edit_field:max_qty")],
+            [InlineKeyboardButton(text="💰 Средняя цена", callback_data="edit_field:avg_price")],
+            [InlineKeyboardButton(text="📝 Описание", callback_data="edit_field:description")],
+            [InlineKeyboardButton(text="🔗 Портфолио", callback_data="edit_field:portfolio")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]
+        ]
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await call.message.edit_text(
+            "<b>Что хотите изменить?</b>\n\n"
+            "Выберите пункт для редактирования:",
+            reply_markup=kb
+        )
+    
+    elif user_role == UserRole.BUYER:
+        buttons = [
+            [InlineKeyboardButton(text="👤 Имя", callback_data="edit_field:full_name")],
+            [InlineKeyboardButton(text="📱 Телефон", callback_data="edit_field:phone")],
+            [InlineKeyboardButton(text="📧 Email", callback_data="edit_field:email")],
+            [InlineKeyboardButton(text="❌ Отмена", callback_data="cancel_edit")]
+        ]
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        
+        await call.message.edit_text(
+            "<b>Что хотите изменить?</b>\n\n"
+            "Выберите пункт для редактирования:",
+            reply_markup=kb
+        )
+    
+    await call.answer()
+
+@router.callback_query(F.data.startswith("edit_field:"))
+async def edit_field_select(call: CallbackQuery, state: FSMContext) -> None:
+    """Select field to edit."""
+    field = call.data.split(":", 1)[1]
+    
+    field_names = {
+        'name': 'название фабрики',
+        'address': 'адрес производства',
+        'categories': 'категории',
+        'min_qty': 'минимальную партию',
+        'max_qty': 'максимальную партию',
+        'avg_price': 'среднюю цену',
+        'description': 'описание',
+        'portfolio': 'ссылку на портфолио',
+        'full_name': 'имя',
+        'phone': 'телефон',
+        'email': 'email'
+    }
+    
+    await state.update_data(edit_field=field)
+    await state.set_state(ProfileEditForm.new_value)
+    
+    if field == 'categories':
+        await call.message.edit_text(
+            "Выберите новые категории:",
+            reply_markup=kb_categories()
+        )
+        await state.update_data(selected_categories=[])
+    else:
+        await call.message.edit_text(
+            f"Введите новое значение для поля «{field_names.get(field, field)}»:"
+        )
+    
+    await call.answer()
+
+@router.callback_query(F.data.startswith("cat:"), ProfileEditForm.new_value)
+async def edit_category_select(call: CallbackQuery, state: FSMContext) -> None:
+    """Handle category selection during profile edit."""
+    category = call.data.split(":", 1)[1]
+    
+    if category == "done":
+        data = await state.get_data()
+        selected = data.get("selected_categories", [])
+        
+        if not selected:
+            await call.answer("Выберите хотя бы одну категорию!", show_alert=True)
+            return
+        
+        # Update categories
+        categories_str = ",".join(selected)
+        run("UPDATE factories SET categories = ? WHERE tg_id = ?", 
+            (categories_str, call.from_user.id))
+        
+        await call.message.edit_text(
+            f"✅ Категории обновлены!\n\n"
+            f"Новые категории: {', '.join([c.capitalize() for c in selected])}"
+        )
+        
+        await state.clear()
+    else:
+        data = await state.get_data()
+        selected: list = data.get("selected_categories", [])
+        
+        if category in selected:
+            selected.remove(category)
+            await call.answer(f"❌ {category} удалена")
+        else:
+            selected.append(category)
+            await call.answer(f"✅ {category} добавлена")
+        
+        await state.update_data(selected_categories=selected)
+    
+    await call.answer()
+
+@router.message(ProfileEditForm.new_value)
+async def edit_field_save(msg: Message, state: FSMContext) -> None:
+    """Save edited field value."""
+    data = await state.get_data()
+    field = data.get('edit_field')
+    new_value = msg.text.strip() if msg.text else ""
+    
+    if not new_value:
+        await msg.answer("❌ Введите корректное значение:")
+        return
+    
+    user_role = get_user_role(msg.from_user.id)
+    
+    try:
+        if user_role == UserRole.FACTORY:
+            if field in ['min_qty', 'max_qty', 'avg_price']:
+                new_value = parse_digits(new_value)
+                if not new_value or new_value < 1:
+                    await msg.answer("❌ Введите корректное число:")
+                    return
+            
+            run(f"UPDATE factories SET {field} = ? WHERE tg_id = ?", 
+                (new_value, msg.from_user.id))
+        
+        elif user_role == UserRole.BUYER:
+            run(f"UPDATE users SET {field} = ? WHERE tg_id = ?", 
+                (new_value, msg.from_user.id))
+        
+        field_names = {
+            'name': 'Название фабрики',
+            'address': 'Адрес',
+            'min_qty': 'Минимальная партия',
+            'max_qty': 'Максимальная партия',
+            'avg_price': 'Средняя цена',
+            'description': 'Описание',
+            'portfolio': 'Портфолио',
+            'full_name': 'Имя',
+            'phone': 'Телефон',
+            'email': 'Email'
+        }
+        
+        await msg.answer(
+            f"✅ {field_names.get(field, field)} обновлено!",
+            reply_markup=kb_factory_menu() if user_role == UserRole.FACTORY else kb_buyer_menu()
+        )
+        
+        await state.clear()
+        
+    except Exception as e:
+        logger.error(f"Error updating profile field {field}: {e}")
+        await msg.answer("❌ Ошибка при обновлении данных")
+
+@router.callback_query(F.data == "cancel_edit")
+async def cancel_edit(call: CallbackQuery, state: FSMContext) -> None:
+    """Cancel profile editing."""
+    await state.clear()
+    await call.message.edit_text("❌ Редактирование отменено")
+    await call.answer()
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Управление фотографиями фабрики
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "manage_photos")
+async def manage_photos_start(call: CallbackQuery, state: FSMContext) -> None:
+    """Start photo management."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (call.from_user.id,))
+    if not factory:
+        await call.answer("Профиль фабрики не найден", show_alert=True)
+        return
+
+    photos = q("SELECT * FROM factory_photos WHERE factory_id = ? ORDER BY is_primary DESC, created_at", 
+              (call.from_user.id,))
+
+    text = f"<b>Управление фотографиями</b>\n\n"
+    if photos:
+        text += f"У вас {len(photos)} фото:\n"
+        for i, photo in enumerate(photos[:3], 1):
+            primary = "👑 " if photo['is_primary'] else ""
+            text += f"{primary}{i}. {photo['type'].title()}\n"
+    else:
+        text += "У вас пока нет фотографий"
+
+    buttons = [
+        [InlineKeyboardButton(text="📸 Добавить фото", callback_data="photo_add")],
+        [InlineKeyboardButton(text="🗑 Удалить все", callback_data="photo_delete_all")],
+        [InlineKeyboardButton(text="❌ Закрыть", callback_data="photo_close")]
+    ]
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await call.message.edit_text(text, reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "photo_add")
+async def photo_add_start(call: CallbackQuery, state: FSMContext) -> None:
+    """Start adding photos."""
+    await state.set_state(PhotoManagementForm.upload)
+    
+    await call.message.edit_text(
+        "📸 <b>Добавление фото</b>\n\n"
+        "Отправьте фотографии производства (до 3 штук).\n"
+        "Или напишите «готово» когда закончите:"
+    )
+    await call.answer()
+
+@router.message(PhotoManagementForm.upload, F.photo)
+async def photo_upload_process(msg: Message, state: FSMContext) -> None:
+    """Process photo upload."""
+    # Check current photo count
+    current_count = q1("SELECT COUNT(*) as cnt FROM factory_photos WHERE factory_id = ?", 
+                      (msg.from_user.id,))['cnt']
+    
+    if current_count >= 5:
+        await msg.answer("❌ Максимум 5 фотографий. Удалите старые, чтобы добавить новые.")
+        return
+    
+    # Add photo
+    is_primary = 1 if current_count == 0 else 0
+    run("""
+        INSERT INTO factory_photos (factory_id, file_id, type, is_primary)
+        VALUES (?, ?, 'workshop', ?)
+    """, (msg.from_user.id, msg.photo[-1].file_id, is_primary))
+    
+    await msg.answer(
+        f"✅ Фото добавлено! ({current_count + 1}/5)\n"
+        f"Отправьте еще или напишите «готово»"
+    )
+
+@router.message(PhotoManagementForm.upload, F.text)
+async def photo_upload_finish(msg: Message, state: FSMContext) -> None:
+    """Finish photo upload."""
+    if msg.text and msg.text.lower() in ["готово", "done", "стоп"]:
+        await state.clear()
+        await msg.answer(
+            "✅ Фотографии обновлены!",
+            reply_markup=kb_factory_menu()
+        )
+    else:
+        await msg.answer("Отправьте фото или напишите «готово»")
+
+@router.callback_query(F.data == "photo_delete_all")
+async def photo_delete_all(call: CallbackQuery) -> None:
+    """Delete all photos."""
+    run("DELETE FROM factory_photos WHERE factory_id = ?", (call.from_user.id,))
+    
+    await call.message.edit_text("✅ Все фотографии удалены")
+    await call.answer("Фотографии удалены")
+
+@router.callback_query(F.data == "photo_close")
+async def photo_close(call: CallbackQuery) -> None:
+    """Close photo management."""
+    await call.message.edit_text("📸 Управление фотографиями закрыто")
+    await call.answer()
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Дополнительные callback handlers
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "upgrade_pro")
+async def upgrade_to_pro(call: CallbackQuery) -> None:
+    """Upgrade factory to PRO status."""
+    factory = q1("SELECT * FROM factories WHERE tg_id = ?", (call.from_user.id,))
+    if not factory:
+        await call.answer("Профиль фабрики не найден", show_alert=True)
+        return
+    
+    if factory['is_pro']:
+        await call.answer("У вас уже есть PRO статус!", show_alert=True)
+        return
+    
+    # ЗАГЛУШКА для оплаты PRO
+    run("""
+        UPDATE factories 
+        SET is_pro = 1, pro_expires = datetime('now', '+1 month')
+        WHERE tg_id = ?
+    """, (call.from_user.id,))
+    
+    # Create payment record
+    insert_and_get_id("""
+        INSERT INTO payments 
+        (user_id, type, amount, status, reference_type, reference_id)
+        VALUES (?, 'factory_pro', 2000, 'completed', 'factory', ?)
+    """, (call.from_user.id, call.from_user.id))
+    
+    await call.message.edit_text(
+        "✅ <b>PRO статус активирован!</b>\n\n"
+        "🎯 Активен на 1 месяц\n"
+        "📬 Вы будете получать все подходящие заявки\n"
+        "💬 Можете откликаться без ограничений\n\n"
+        "Начните получать заказы прямо сейчас!"
+    )
+    
+    await call.answer("PRO статус активирован!")
+
+@router.callback_query(F.data == "view_all_ratings")
+async def view_all_ratings(call: CallbackQuery) -> None:
+    """View all factory ratings."""
+    ratings = q("""
+        SELECT r.*, o.title, u.full_name as buyer_name
+        FROM ratings r
+        JOIN deals d ON r.deal_id = d.id
+        JOIN orders o ON d.order_id = o.id
+        JOIN users u ON r.buyer_id = u.tg_id
+        WHERE r.factory_id = ?
+        ORDER BY r.created_at DESC
+        LIMIT 10
+    """, (call.from_user.id,))
+    
+    if not ratings:
+        await call.message.edit_text("У вас пока нет отзывов.")
+        return
+    
+    ratings_text = f"<b>Все отзывы ({len(ratings)})</b>\n\n"
+    
+    for rating in ratings:
+        stars = "⭐" * rating['rating']
+        ratings_text += (
+            f"{stars} ({rating['rating']}/5)\n"
+            f"📦 {rating['title'][:30]}...\n"
+            f"👤 {rating['buyer_name']}\n"
+            f"📅 {rating['created_at'][:10]}\n"
+        )
+        if rating['comment']:
+            ratings_text += f"💬 {rating['comment'][:100]}...\n"
+        ratings_text += "\n"
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_rating")]
+    ])
+    
+    await call.message.edit_text(ratings_text, reply_markup=kb)
+    await call.answer()
+
+@router.callback_query(F.data == "back_to_rating")
+async def back_to_rating(call: CallbackQuery) -> None:
+    """Go back to rating summary."""
+    await call.message.delete()
+    await call.answer()
+
+@router.callback_query(F.data == "analytics_detailed")
+async def analytics_detailed(call: CallbackQuery) -> None:
+    """Show detailed analytics."""
+    await call.answer("Детальная аналитика будет добавлена в следующем обновлении", show_alert=True)
+
+@router.callback_query(F.data == "analytics_rating")
+async def analytics_rating_comparison(call: CallbackQuery) -> None:
+    """Show rating comparison with other factories."""
+    factory = q1("SELECT rating, rating_count FROM factories WHERE tg_id = ?", (call.from_user.id,))
+    if not factory or factory['rating_count'] == 0:
+        await call.answer("Недостаточно данных для сравнения", show_alert=True)
+        return
+    
+    # Get position among all factories
+    position = q1("""
+        SELECT COUNT(*) + 1 as position
+        FROM factories
+        WHERE rating > ? AND rating_count > 0
+    """, (factory['rating'],))
+    
+    # Get average rating
+    avg_rating = q1("""
+        SELECT AVG(rating) as avg_rating, COUNT(*) as total_factories
+        FROM factories
+        WHERE rating_count > 0
+    """)
+    
+    comparison_text = (
+        f"📊 <b>Ваш рейтинг среди фабрик</b>\n\n"
+        f"⭐ Ваш рейтинг: {factory['rating']:.1f}/5.0\n"
+        f"🏆 Позиция: #{position['position']}\n"
+        f"📊 Средний рейтинг: {avg_rating['avg_rating']:.1f}/5.0\n"
+        f"🏭 Всего фабрик с рейтингом: {avg_rating['total_factories']}\n\n"
+    )
+    
+    if factory['rating'] > avg_rating['avg_rating']:
+        comparison_text += "🎉 Вы выше среднего!"
+    else:
+        comparison_text += "💪 Есть куда расти!"
+    
+    await call.message.answer(comparison_text)
+    await call.answer()
+
+@router.callback_query(F.data == "payment_history")
+async def payment_history(call: CallbackQuery) -> None:
+    """Show payment history."""
+    payments = q("""
+        SELECT * FROM payments 
+        WHERE user_id = ? 
+        ORDER BY created_at DESC 
+        LIMIT 10
+    """, (call.from_user.id,))
+    
+    if not payments:
+        await call.message.answer("История платежей пуста")
+        return
+    
+    history_text = "<b>💳 История платежей</b>\n\n"
+    
+    for payment in payments:
+        status_emoji = {"completed": "✅", "pending": "⏳", "failed": "❌"}.get(payment['status'], "❓")
+        type_names = {
+            "factory_pro": "PRO подписка",
+            "order_placement": "Размещение заказа",
+            "sample": "Оплата образца"
+        }
+        
+        history_text += (
+            f"{status_emoji} {type_names.get(payment['type'], payment['type'])}\n"
+            f"💰 {format_price(payment['amount'])} ₽\n"
+            f"📅 {payment['created_at'][:16]}\n\n"
+        )
+    
+    await call.message.answer(history_text)
+    await call.answer()
+
+@router.callback_query(F.data == "revenue_chart")
+async def revenue_chart(call: CallbackQuery) -> None:
+    """Show revenue chart (placeholder)."""
+    await call.answer("График доходов будет добавлен в следующем обновлении", show_alert=True)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Обработчики для редактирования заказов/предложений
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data == "edit_order")
+async def edit_order_from_creation(call: CallbackQuery, state: FSMContext) -> None:
+    """Edit order during creation process."""
+    await call.answer("Функция редактирования при создании будет добавлена в следующем обновлении", show_alert=True)
+
+@router.callback_query(F.data == "edit_factory")
+async def edit_factory_from_creation(call: CallbackQuery, state: FSMContext) -> None:
+    """Edit factory data during registration."""
+    await call.answer("Функция редактирования при регистрации будет добавлена в следующем обновлении", show_alert=True)
+
+# ---------------------------------------------------------------------------
+#  ДОРАБОТКА: Обработчики для просмотра и создания чатов
+# ---------------------------------------------------------------------------
+
+async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int | None:
+    """Create group chat for deal."""
+    try:
+        # Get deal info
+        deal = q1("""
+            SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
+            FROM deals d
+            JOIN orders o ON d.order_id = o.id
+            JOIN factories f ON d.factory_id = f.tg_id
+            JOIN users u ON d.buyer_id = u.tg_id
+            WHERE d.id = ?
+        """, (deal_id,))
+        
+        if not deal:
+            return None
+        
+        # Create group chat - в реальности здесь был бы API вызов для создания группы
+        # Для демо симулируем ID чата
+        chat_id = f"-100{deal_id}{buyer_id}"  # Mock chat ID
+        
+        # Update deal with chat_id
+        run("UPDATE deals SET chat_id = ? WHERE id = ?", (chat_id, deal_id))
+        
+        # Send welcome message to participants
+        welcome_message = (
+            f"🤝 <b>Добро пожаловать в чат сделки #{deal_id}!</b>\n\n"
+            f"📦 Заказ: {deal['title']}\n"
+            f"🏭 Фабрика: {deal['factory_name']}\n"
+            f"👤 Заказчик: {deal['buyer_name']}\n"
+            f"💰 Сумма: {format_price(deal['amount'])} ₽\n\n"
+            f"Здесь вы можете обсуждать детали заказа, задавать вопросы "
+            f"и отслеживать прогресс выполнения.\n\n"
+            f"Администрация платформы также участвует в чате для "
+            f"решения любых вопросов."
+        )
+        
+        # Send to buyer
+        await bot.send_message(buyer_id, welcome_message)
+        
+        # Send to factory
+        await bot.send_message(factory_id, welcome_message)
+        
+        # Send to admins
+        for admin_id in ADMIN_IDS:
+            try:
+                await bot.send_message(
+                    admin_id,
+                    f"🔔 Создан чат для сделки #{deal_id}\n\n{welcome_message}"
+                )
+            except:
+                pass
+        
+        return int(chat_id.replace("-100", ""))
+        
+    except Exception as e:
+        logger.error(f"Error creating deal chat for deal {deal_id}: {e}")
+        return None
+
+@router.callback_query(F.data.startswith("deal_chat:"))
+async def deal_chat_handler(call: CallbackQuery) -> None:
+    """Handle deal chat access."""
+    deal_id = int(call.data.split(":", 1)[1])
+    
+    # Get deal info
+    deal = q1("""
+        SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
+        FROM deals d
+        JOIN orders o ON d.order_id = o.id
+        JOIN factories f ON d.factory_id = f.tg_id
+        JOIN users u ON d.buyer_id = u.tg_id
+        WHERE d.id = ? AND (d.buyer_id = ? OR d.factory_id = ?)
+    """, (deal_id, call.from_user.id, call.from_user.id))
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    # Check if chat already exists
+    if deal['chat_id']:
+        chat_info = (
+            f"💬 <b>Чат сделки #{deal_id}</b>\n\n"
+            f"📦 {deal['title']}\n"
+            f"🏭 {deal['factory_name']}\n"
+            f"👤 {deal['buyer_name']}\n\n"
+            f"Чат уже создан. Все участники получили приглашения.\n\n"
+            f"💡 <i>В данной демо-версии групповые чаты симулируются. "
+            f"В продакшн-версии здесь будет ссылка на реальный групповой чат Telegram.</i>"
+        )
+    else:
+        # Create new chat
+        chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
+        
+        if chat_id:
+            chat_info = (
+                f"✅ <b>Чат сделки #{deal_id} создан!</b>\n\n"
+                f"📦 {deal['title']}\n"
+                f"🏭 {deal['factory_name']}\n"
+                f"👤 {deal['buyer_name']}\n\n"
+                f"Все участники добавлены в групповой чат.\n\n"
+                f"💡 <i>В данной демо-версии групповые чаты симулируются. "
+                f"В продакшн-версии здесь будет ссылка на реальный групповой чат Telegram.</i>"
+            )
+        else:
+            chat_info = (
+                f"❌ <b>Ошибка создания чата</b>\n\n"
+                f"Не удалось создать групповой чат для сделки #{deal_id}.\n"
+                f"Обратитесь в поддержку."
+            )
+    
+    await call.message.answer(chat_info)
+    await call.answer()
+
+# ---------------------------------------------------------------------------
+#  Entry point functions
+# ---------------------------------------------------------------------------
+
+async def run_webhook() -> None:
+    """Start the bot in webhook mode."""
+    if not WEBHOOK_BASE:
+        logger.error("Error: WEBHOOK_BASE env var required for webhook mode")
+        return
+    
+    logger.info("Starting bot in webhook mode on port %s", PORT)
+    
+    # Remove any existing webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Set the new webhook URL
+    webhook_url = f"{WEBHOOK_BASE}/webhook"
+    
+    # Create aiohttp app
+    app = web.Application()
+    
+    # Setup webhook route
+    webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_handler.register(app, path="/webhook")
+    
+    # Set the webhook
+    await bot.set_webhook(webhook_url)
+    logger.info("Webhook set to: %s", webhook_url)
+    
+    # Setup startup callback
+    dp.startup.register(on_startup)
+    
+    # Start web server
+    setup_application(app, dp, bot=bot)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    
+    # Run forever
+    await asyncio.Event().wait()
+
+async def run_polling() -> None:
+    """Start the bot in long-polling mode."""
+    logger.info("Starting bot in polling mode")
+    
+    # Remove any existing webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Setup startup callback
+    dp.startup.register(on_startup)
+    
+    # Start polling
+    try:
+        await dp.start_polling(bot)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by keyboard interrupt")
+    finally:
+        logger.info("Shutting down...")
+        await dp.storage.close()
+        await bot.session.close()
+
+async def main() -> None:
+    """Main entry point."""
+    if BOT_MODE == "WEBHOOK":
+        await run_webhook()
+    else:
+        await run_polling()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped")
+    """Start the bot in webhook mode."""
+    if not WEBHOOK_BASE:
+        logger.error("Error: WEBHOOK_BASE env var required for webhook mode")
+        return
+    
+    logger.info("Starting bot in webhook mode on port %s", PORT)
+    
+    # Remove any existing webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Set the new webhook URL
+    webhook_url = f"{WEBHOOK_BASE}/webhook"
+    
+    # Create aiohttp app
+    app = web.Application()
+    
+    # Setup webhook route
+    webhook_handler = SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot,
+    )
+    webhook_handler.register(app, path="/webhook")
+    
+    # Set the webhook
+    await bot.set_webhook(webhook_url)
+    logger.info("Webhook set to: %s", webhook_url)
+    
+    # Setup startup callback
+    dp.startup.register(on_startup)
+    
+    # Start web server
+    setup_application(app, dp, bot=bot)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host="0.0.0.0", port=PORT)
+    await site.start()
+    
+    # Run forever
+    await asyncio.Event().wait()
+
+async def run_polling() -> None:
+    """Start the bot in long-polling mode."""
+    logger.info("Starting bot in polling mode")
+    
+    # Remove any existing webhook
+    await bot.delete_webhook(drop_pending_updates=True)
+    
+    # Setup startup callback
+    dp.startup.register(on_startup)
+    
+    # Start polling
+    try:
+        await dp.start_polling(bot)
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by keyboard interrupt")
+    finally:
+        logger.info("Shutting down...")
+        await dp.storage.close()
+        await bot.session.close()
+
+async def main() -> None:
+    """Main entry point."""
+    if BOT_MODE == "WEBHOOK":
+        await run_webhook()
+    else:
+        await run_polling()
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped")
     """Notify matching factories about new order."""
     factories = q("""
         SELECT f.tg_id, f.name, u.notifications 
