@@ -41,6 +41,7 @@ Env variables
 * `ADMIN_IDS`    – comma-separated admin Telegram IDs
 """
 from __future__ import annotations
+from group_creator import create_deal_chat_real, TelegramGroupCreator
 
 import asyncio
 import logging
@@ -2480,60 +2481,59 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         if not deal:
             return None
         
-        # Create group chat
-        chat_title = f"Сделка #{deal_id} - {deal['title'][:20]}..."
-        chat_description = (
-            f"Групповой чат по сделке #{deal_id}\n"
-            f"Заказчик: {deal['buyer_name']}\n"
-            f"Фабрика: {deal['factory_name']}\n"
-            f"Заказ: {deal['title']}"
+        # Создаем реальную группу
+        chat_id, result = await create_deal_chat_real(
+            deal_id=deal_id,
+            buyer_id=buyer_id,
+            factory_id=factory_id,
+            admin_ids=ADMIN_IDS,  # Используем существующий список админов
+            deal_title=deal['title'],
+            factory_name=deal['factory_name'],
+            buyer_name=deal['buyer_name']
         )
         
-        # Note: This is a simplified version. Real implementation would need:
-        # 1. Bot to have group creation permissions
-        # 2. Add users to group via invite links or direct addition
-        # 3. Handle errors and edge cases
-        
-        # For now, we'll simulate chat creation
-        chat_id = f"-100{deal_id}{buyer_id}"  # Mock chat ID
-        
-        # Update deal with chat_id
-        run("UPDATE deals SET chat_id = ? WHERE id = ?", (chat_id, deal_id))
-        
-        # Send welcome message to participants
-        welcome_message = (
-            f"🤝 <b>Добро пожаловать в чат сделки #{deal_id}!</b>\n\n"
-            f"📦 Заказ: {deal['title']}\n"
-            f"🏭 Фабрика: {deal['factory_name']}\n"
-            f"👤 Заказчик: {deal['buyer_name']}\n"
-            f"💰 Сумма: {format_price(deal['amount'])} ₽\n\n"
-            f"Здесь вы можете обсуждать детали заказа, задавать вопросы "
-            f"и отслеживать прогресс выполнения.\n\n"
-            f"Администрация платформы также участвует в чате для "
-            f"решения любых вопросов."
-        )
-        
-        # Send to buyer
-        await bot.send_message(buyer_id, welcome_message)
-        
-        # Send to factory
-        await bot.send_message(factory_id, welcome_message)
-        
-        # Send to admins
-        for admin_id in ADMIN_IDS:
-            try:
-                await bot.send_message(
-                    admin_id,
-                    f"🔔 Создан чат для сделки #{deal_id}\n\n{welcome_message}"
-                )
-            except:
-                pass
-        
-        return int(chat_id.replace("-100", ""))
+        if chat_id:
+            # Update deal with chat_id
+            run("UPDATE deals SET chat_id = ? WHERE id = ?", (chat_id, deal_id))
+            logger.info(f"Created real group chat {chat_id} for deal {deal_id}")
+            return chat_id
+        else:
+            # Если не удалось создать группу, отправляем уведомления участникам
+            logger.error(f"Failed to create group for deal {deal_id}: {result}")
+            
+            # Уведомляем участников о том, что группа не создана
+            error_message = (
+                f"⚠️ <b>Не удалось создать групповой чат для сделки #{deal_id}</b>\n\n"
+                f"Причина: {result}\n\n"
+                f"Вы можете общаться напрямую друг с другом или обратиться в поддержку."
+            )
+            
+            # Send to buyer
+            await bot.send_message(buyer_id, error_message)
+            
+            # Send to factory
+            await bot.send_message(factory_id, error_message)
+            
+            # Notify admins
+            for admin_id in ADMIN_IDS:
+                try:
+                    await bot.send_message(
+                        admin_id,
+                        f"🚨 Не удалось создать чат для сделки #{deal_id}\n"
+                        f"Ошибка: {result}\n"
+                        f"Покупатель: {buyer_id}\n"
+                        f"Фабрика: {factory_id}"
+                    )
+                except:
+                    pass
+            
+            return None
         
     except Exception as e:
         logger.error(f"Error creating deal chat for deal {deal_id}: {e}")
         return None
+
+# Обновите обработчик deal_chat_handler:
 
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
@@ -2556,38 +2556,165 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
     
     # Check if chat already exists
     if deal['chat_id']:
-        chat_info = (
-            f"💬 <b>Чат сделки #{deal_id}</b>\n\n"
-            f"📦 {deal['title']}\n"
-            f"🏭 {deal['factory_name']}\n"
-            f"👤 {deal['buyer_name']}\n\n"
-            f"Чат уже создан. Все участники получили приглашения.\n\n"
-            f"💡 <i>В данной демо-версии групповые чаты симулируются. "
-            f"В продакшн-версии здесь будет ссылка на реальный групповой чат Telegram.</i>"
-        )
+        # Попробуем получить информацию о группе
+        try:
+            creator = TelegramGroupCreator()
+            group_info = await creator.get_group_info(int(deal['chat_id']))
+            
+            if group_info:
+                chat_info = (
+                    f"💬 <b>Чат сделки #{deal_id}</b>\n\n"
+                    f"📦 {deal['title']}\n"
+                    f"🏭 {deal['factory_name']}\n"
+                    f"👤 {deal['buyer_name']}\n\n"
+                    f"👥 Участников: {group_info['members_count']}\n"
+                    f"📋 Название: {group_info['title']}\n\n"
+                    f"Чат активен. Если вы покинули группу, нажмите кнопку ниже для получения новой ссылки."
+                )
+                
+                # Создаем новую инвайт-ссылку
+                invite_link = await creator.create_invite_link(int(deal['chat_id']))
+                
+                buttons = []
+                if invite_link:
+                    buttons.append([
+                        InlineKeyboardButton(text="🔗 Получить ссылку на чат", url=invite_link)
+                    ])
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+                
+            else:
+                # Группа была удалена или недоступна
+                chat_info = (
+                    f"⚠️ <b>Чат сделки #{deal_id} недоступен</b>\n\n"
+                    f"Возможно, группа была удалена или бот был исключен.\n"
+                    f"Создадим новый чат?"
+                )
+                
+                kb = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="🔄 Создать новый чат", callback_data=f"recreate_chat:{deal_id}")
+                ]])
+                
+        except Exception as e:
+            logger.error(f"Error checking group info for deal {deal_id}: {e}")
+            chat_info = (
+                f"❌ <b>Ошибка доступа к чату</b>\n\n"
+                f"Не удалось получить информацию о чате сделки #{deal_id}."
+            )
+            kb = None
+            
     else:
         # Create new chat
         chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
         
         if chat_id:
+            # Создаем инвайт-ссылку
+            creator = TelegramGroupCreator()
+            invite_link = await creator.create_invite_link(chat_id)
+            
             chat_info = (
                 f"✅ <b>Чат сделки #{deal_id} создан!</b>\n\n"
                 f"📦 {deal['title']}\n"
                 f"🏭 {deal['factory_name']}\n"
                 f"👤 {deal['buyer_name']}\n\n"
-                f"Все участники добавлены в групповой чат.\n\n"
-                f"💡 <i>В данной демо-версии групповые чаты симулируются. "
-                f"В продакшн-версии здесь будет ссылка на реальный групповой чат Telegram.</i>"
+                f"Все участники добавлены в групповой чат."
             )
+            
+            buttons = []
+            if invite_link:
+                buttons.append([
+                    InlineKeyboardButton(text="💬 Перейти в чат", url=invite_link)
+                ])
+            
+            kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
         else:
             chat_info = (
                 f"❌ <b>Ошибка создания чата</b>\n\n"
                 f"Не удалось создать групповой чат для сделки #{deal_id}.\n"
-                f"Обратитесь в поддержку."
+                f"Вы можете общаться напрямую или обратиться в поддержку."
             )
+            kb = None
     
-    await call.message.answer(chat_info)
+    await call.message.answer(chat_info, reply_markup=kb)
     await call.answer()
+
+# Добавьте новый обработчик для пересоздания чата:
+
+@router.callback_query(F.data.startswith("recreate_chat:"))
+async def recreate_chat_handler(call: CallbackQuery) -> None:
+    """Recreate chat for deal."""
+    deal_id = int(call.data.split(":", 1)[1])
+    
+    # Get deal info
+    deal = q1("""
+        SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
+        FROM deals d
+        JOIN orders o ON d.order_id = o.id
+        JOIN factories f ON d.factory_id = f.tg_id
+        JOIN users u ON d.buyer_id = u.tg_id
+        WHERE d.id = ? AND (d.buyer_id = ? OR d.factory_id = ?)
+    """, (deal_id, call.from_user.id, call.from_user.id))
+    
+    if not deal:
+        await call.answer("Сделка не найдена", show_alert=True)
+        return
+    
+    # Clear old chat_id
+    run("UPDATE deals SET chat_id = NULL WHERE id = ?", (deal_id,))
+    
+    # Create new chat
+    chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
+    
+    if chat_id:
+        creator = TelegramGroupCreator()
+        invite_link = await creator.create_invite_link(chat_id)
+        
+        response = (
+            f"✅ <b>Новый чат создан!</b>\n\n"
+            f"Все участники добавлены в обновленный групповой чат."
+        )
+        
+        buttons = []
+        if invite_link:
+            buttons.append([
+                InlineKeyboardButton(text="💬 Перейти в чат", url=invite_link)
+            ])
+        
+        kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+        
+        await call.message.edit_text(response, reply_markup=kb)
+    else:
+        await call.message.edit_text(
+            "❌ Не удалось создать новый чат. Обратитесь в поддержку."
+        )
+    
+    await call.answer()
+
+# Добавьте утилитарную функцию для отправки сообщений в чат сделки:
+
+async def send_deal_update(deal_id: int, message: str) -> bool:
+    """
+    Отправляет обновление в чат сделки
+    
+    Args:
+        deal_id: ID сделки
+        message: Сообщение для отправки
+        
+    Returns:
+        True если успешно, False если ошибка
+    """
+    try:
+        deal = q1("SELECT chat_id FROM deals WHERE id = ?", (deal_id,))
+        
+        if not deal or not deal['chat_id']:
+            return False
+        
+        creator = TelegramGroupCreator()
+        return await creator.send_message_to_group(int(deal['chat_id']), message)
+        
+    except Exception as e:
+        logger.error(f"Error sending deal update for {deal_id}: {e}")
+        return False
 
 # ---------------------------------------------------------------------------
 #  ДОРАБОТКА: Отмена сделок с предупреждением
