@@ -8,9 +8,9 @@
 3. Настроить переменные окружения или передать параметры напрямую
 
 Переменные окружения:
-- TELEGRAM_API_ID - API ID от Telegram
-- TELEGRAM_API_HASH - API Hash от Telegram  
-- TELEGRAM_BOT_TOKEN - токен вашего бота
+- TELEGRAM_API_ID - 25651355
+- TELEGRAM_API_HASH - 216ecff1bbd5b60a8d8734d84013f028
+- TELEGRAM_BOT_TOKEN - 7872394424:AAE0sUBNy2p61kXw4XlZTv3JQp9wB8B_fmY
 """
 
 import asyncio
