@@ -1207,6 +1207,37 @@ async def cmd_help(msg: Message) -> None:
     
     await msg.answer(help_text, reply_markup=kb_main(user_role))
 
+@router.message(Command("loopinfo"))
+async def cmd_loop_info(msg: Message) -> None:
+    """Show event loop info for admin."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    try:
+        loop = asyncio.get_running_loop()
+        loop_info = (
+            f"🔄 <b>Event Loop Info:</b>\n\n"
+            f"Loop ID: {id(loop)}\n"
+            f"Running: {loop.is_running()}\n"
+            f"Closed: {loop.is_closed()}\n"
+            f"Debug: {loop.get_debug()}\n"
+        )
+        
+        # Check if we can create tasks
+        try:
+            test_task = loop.create_task(asyncio.sleep(0))
+            await test_task
+            loop_info += f"Task creation: ✅\n"
+        except Exception as e:
+            loop_info += f"Task creation: ❌ {e}\n"
+        
+        loop_info += f"\nGroup creator available: {'✅' if GROUP_CREATOR_AVAILABLE else '❌'}"
+        
+    except Exception as e:
+        loop_info = f"❌ Error getting loop info: {e}"
+    
+    await msg.answer(loop_info)
+
 # ---------------------------------------------------------------------------
 #  ДОРАБОТКА: Мои заказы для покупателей
 # ---------------------------------------------------------------------------
@@ -5221,9 +5252,20 @@ async def load_more_orders(call: CallbackQuery) -> None:
 # ---------------------------------------------------------------------------
 
 async def run_background_tasks():
-    """Run periodic background tasks."""
+    """Run periodic background tasks with proper event loop handling."""
+    last_daily_report = None
+    
+    # Получаем текущий event loop
+    loop = asyncio.get_running_loop()
+    logger.info(f"Background tasks starting in loop: {id(loop)}")
+    
     while True:
         try:
+            current_time = datetime.now()
+            
+            # Check PRO expiration every hour
+            await check_pro_expiration()
+            
             # Clean up old notifications
             run("""
                 DELETE FROM notifications 
@@ -5231,8 +5273,72 @@ async def run_background_tasks():
                   AND created_at < datetime('now', '-30 days')
             """)
             
-            logger.info("Background cleanup completed")
+            # Send daily report at 9:00 AM
+            if current_time.hour == 9 and last_daily_report != current_time.date():
+                await send_daily_report()
+                last_daily_report = current_time.date()
             
+            # Update analytics
+            daily_stats = q1("""
+                SELECT 
+                    COUNT(DISTINCT CASE WHEN role = 'factory' THEN tg_id END) as factories,
+                    COUNT(DISTINCT CASE WHEN role = 'buyer' THEN tg_id END) as buyers,
+                    COUNT(DISTINCT o.id) as orders,
+                    COUNT(DISTINCT d.id) as deals
+                FROM users u
+                LEFT JOIN orders o ON u.tg_id = o.buyer_id 
+                    AND date(o.created_at) = date('now')
+                LEFT JOIN deals d ON u.tg_id IN (d.buyer_id, d.factory_id) 
+                    AND date(d.created_at) = date('now')
+            """)
+            
+            logger.info(
+                f"Daily stats - Factories: {daily_stats['factories']}, "
+                f"Buyers: {daily_stats['buyers']}, "
+                f"Orders: {daily_stats['orders']}, "
+                f"Deals: {daily_stats['deals']}"
+            )
+            
+            # Check for stale deals (no activity for 7 days)
+            stale_deals = q("""
+                SELECT d.*, o.title, f.name as factory_name, u.username as buyer_username
+                FROM deals d
+                JOIN orders o ON d.order_id = o.id
+                JOIN factories f ON d.factory_id = f.tg_id
+                JOIN users u ON d.buyer_id = u.tg_id
+                WHERE d.status NOT IN ('DELIVERED', 'CANCELLED')
+                  AND d.updated_at < datetime('now', '-7 days')
+            """)
+            
+            if stale_deals:
+                stale_report = "<b>⚠️ Застрявшие сделки (нет активности > 7 дней)</b>\n\n"
+                for deal in stale_deals[:5]:
+                    stale_report += (
+                        f"#{deal['id']} - {deal['title']}\n"
+                        f"Статус: {deal['status']}\n"
+                        f"Покупатель: @{deal['buyer_username']}\n"
+                        f"Фабрика: {deal['factory_name']}\n\n"
+                    )
+                
+                await notify_admins(
+                    'stale_deals',
+                    '⚠️ Обнаружены застрявшие сделки',
+                    stale_report,
+                    {'count': len(stale_deals)},
+                    [[InlineKeyboardButton(text="📋 Все застрявшие", callback_data="admin_stale_deals")]]
+                )
+            
+        except RuntimeError as e:
+            if "event loop" in str(e).lower():
+                logger.error(f"Event loop error in background tasks: {e}")
+                # Пытаемся переключиться на текущий loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    logger.info(f"Switched to loop: {id(loop)}")
+                except:
+                    pass
+            else:
+                logger.error(f"Runtime error in background tasks: {e}")
         except Exception as e:
             logger.error(f"Error in background tasks: {e}")
         
@@ -5240,11 +5346,15 @@ async def run_background_tasks():
         await asyncio.sleep(3600)
 
 async def on_startup(bot: Bot) -> None:
-    """Run on bot startup."""
+    """Run on bot startup with proper event loop handling."""
     init_db()
     
-    # Start background tasks
-    asyncio.create_task(run_background_tasks())
+    # Get current event loop
+    loop = asyncio.get_running_loop()
+    logger.info(f"Bot starting in loop: {id(loop)}")
+    
+    # Start background tasks in the same loop
+    loop.create_task(run_background_tasks())
     
     # Set bot commands
     await bot.set_my_commands([
@@ -6345,17 +6455,26 @@ async def run_polling() -> None:
         await bot.session.close()
 
 async def main() -> None:
-    """Main entry point."""
-    if BOT_MODE == "WEBHOOK":
-        await run_webhook()
-    else:
-        await run_polling()
-
-if __name__ == "__main__":
+    """Main entry point with event loop handling."""
+    # Устанавливаем политику event loop
     try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Bot stopped")
+        if hasattr(asyncio, 'WindowsSelectorEventLoopPolicy'):
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    except:
+        pass
+    
+    try:
+        if BOT_MODE == "WEBHOOK":
+            await run_webhook()
+        else:
+            await run_polling()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by keyboard interrupt")
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}")
+        raise
+    finally:
+        logger.info("Bot shutdown complete")
         
 async def notify_factories(order_row, bot, q, order_caption, send_notification, logger):
     """
