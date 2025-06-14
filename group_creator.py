@@ -18,7 +18,7 @@ if TELETHON_AVAILABLE:
     from telethon import TelegramClient, errors
     from telethon.tl.functions.messages import CreateChatRequest, AddChatUserRequest
     from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
-    from telethon.tl.functions.channels import ExportChatInviteRequest
+    from telethon.tl.functions.messages import ExportChatInviteRequest
     from telethon.tl.types import PeerChannel, PeerChat, InputPeerUser
 
 logger = logging.getLogger("group_creator")
