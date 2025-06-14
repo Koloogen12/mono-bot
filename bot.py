@@ -5766,7 +5766,10 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
         
-    """Notify matching factories about new order."""
+   async def notify_factories(order_row, bot, q, order_caption, send_notification, logger):
+    """
+    Notify matching factories about new order.
+    """
     factories = q("""
         SELECT f.tg_id, f.name, u.notifications 
         FROM factories f
