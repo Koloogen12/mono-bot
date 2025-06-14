@@ -3603,14 +3603,137 @@ async def view_order_details(call: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith("download:"))
 async def download_tz(call: CallbackQuery):
     """Download technical specification file."""
-    order_id = int(call.data.split(":")[1])
-    order = q1("SELECT * FROM orders WHERE id = ?", (order_id,))
-    file_id = order['file_id'] if 'file_id' in order and order['file_id'] else None
+    try:
+        order_id = int(call.data.split(":")[1])
+        
+        # Get order info
+        order = q1("SELECT file_id, title FROM orders WHERE id = ?", (order_id,))
+        
+        if not order:
+            await call.answer("Заказ не найден", show_alert=True)
+            return
+        
+        # Check if file exists and is not empty
+        file_id = order['file_id']
+        
+        if file_id and file_id.strip():  # Проверяем что file_id не None и не пустая строка
+            try:
+                # Определяем тип файла для caption
+                order_title = order['title'] or f"Заказ #{order_id}"
+                caption = f"📎 Техническое задание\n📋 {order_title}"
+                
+                # Отправляем файл
+                await bot.send_document(
+                    chat_id=call.message.chat.id,
+                    document=file_id,
+                    caption=caption
+                )
+                
+                # Подтверждаем успешную отправку
+                await call.answer("✅ Файл отправлен")
+                
+                # Логируем успешное скачивание
+                logger.info(f"File downloaded for order {order_id} by user {call.from_user.id}")
+                
+            except Exception as e:
+                logger.error(f"Error sending file for order {order_id}: {e}")
+                
+                # Если файл поврежден или недоступен
+                await call.answer(
+                    "❌ Ошибка при отправке файла. Возможно, файл поврежден или удален.", 
+                    show_alert=True
+                )
+        else:
+            # Файл не прикреплен
+            await call.answer(
+                "📎 К этому заказу не прикреплен файл с техническим заданием", 
+                show_alert=True
+            )
+            
+    except ValueError:
+        # Ошибка парсинга order_id
+        await call.answer("❌ Неверный формат запроса", show_alert=True)
+        logger.error(f"Invalid order_id format in download request: {call.data}")
+        
+    except Exception as e:
+        # Общая ошибка
+        logger.error(f"Unexpected error in download_tz: {e}")
+        await call.answer("❌ Произошла ошибка при загрузке файла", show_alert=True)
 
-    if file_id:
-        await call.message.answer_document(file_id, caption="Техническое задание по заказу")
-    else:
-        await call.answer("К этому заказу не прикреплен файл ТЗ.", show_alert=True)
+# Дополнительная функция для проверки доступности файла (опционально)
+async def check_file_availability(file_id: str) -> bool:
+    """
+    Проверяет доступность файла в Telegram
+    
+    Args:
+        file_id: ID файла в Telegram
+        
+    Returns:
+        True если файл доступен, False если нет
+    """
+    try:
+        # Пытаемся получить информацию о файле
+        file_info = await bot.get_file(file_id)
+        return file_info is not None
+    except Exception as e:
+        logger.error(f"File {file_id} is not available: {e}")
+        return False
+
+# Улучшенная версия с предварительной проверкой файла
+@router.callback_query(F.data.startswith("download_safe:"))
+async def download_tz_safe(call: CallbackQuery):
+    """Download technical specification file with pre-check."""
+    try:
+        order_id = int(call.data.split(":")[1])
+        
+        # Get order info
+        order = q1("SELECT file_id, title FROM orders WHERE id = ?", (order_id,))
+        
+        if not order:
+            await call.answer("Заказ не найден", show_alert=True)
+            return
+        
+        file_id = order['file_id']
+        
+        if not file_id or not file_id.strip():
+            await call.answer(
+                "📎 К этому заказу не прикреплен файл с техническим заданием", 
+                show_alert=True
+            )
+            return
+        
+        # Показываем индикатор загрузки
+        await call.answer("⏳ Подготавливаем файл...")
+        
+        # Проверяем доступность файла
+        if not await check_file_availability(file_id):
+            await bot.send_message(
+                call.message.chat.id,
+                "❌ Файл недоступен или был удален из Telegram. Обратитесь к заказчику за новой версией."
+            )
+            return
+        
+        # Отправляем файл
+        order_title = order['title'] or f"Заказ #{order_id}"
+        caption = f"📎 Техническое задание\n📋 {order_title}"
+        
+        await bot.send_document(
+            chat_id=call.message.chat.id,
+            document=file_id,
+            caption=caption
+        )
+        
+        logger.info(f"File safely downloaded for order {order_id} by user {call.from_user.id}")
+        
+    except ValueError:
+        await call.answer("❌ Неверный формат запроса", show_alert=True)
+        
+    except Exception as e:
+        logger.error(f"Error in download_tz_safe: {e}")
+        await bot.send_message(
+            call.message.chat.id,
+            "❌ Произошла ошибка при загрузке файла. Попробуйте позже или обратитесь в поддержку."
+        )
 
 @router.callback_query(F.data.startswith("lead:"))
 async def process_lead_response(call: CallbackQuery, state: FSMContext) -> None:
