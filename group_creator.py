@@ -1,60 +1,55 @@
 """
-Модуль для создания групповых чатов в Telegram
-============================================
-
-Требования:
-1. pip install pyrogram
-2. Получить API_ID и API_HASH на https://my.telegram.org/apps
-3. Настроить переменные окружения или передать параметры напрямую
-
-Переменные окружения:
-- TELEGRAM_API_ID - 25651355
-- TELEGRAM_API_HASH - 216ecff1bbd5b60a8d8734d84013f028
-- TELEGRAM_BOT_TOKEN - 7872394424:AAE0sUBNy2p61kXw4XlZTv3JQp9wB8B_fmY
+Group creator module for creating Telegram group chats for deals.
+Handles real group creation using Telegram Client API.
 """
-
 import asyncio
 import logging
 import os
-from typing import List, Optional, Tuple
-from pyrogram import Client
-from pyrogram.errors import (
-    UserPrivacyRestricted, 
-    UserNotMutualContact, 
-    FloodWait,
-    ChatAdminRequired,
-    UserAlreadyParticipant
-)
+from typing import Optional, Tuple, Dict, Any, List
+from contextlib import asynccontextmanager
+
+try:
+    from telethon import TelegramClient, errors
+    from telethon.tl.functions.messages import CreateChatRequest, AddChatUserRequest
+    from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
+    from telethon.tl.functions.channels import ExportChatInviteRequest
+    from telethon.tl.types import PeerChannel, PeerChat, InputPeerUser
+    TELETHON_AVAILABLE = True
+except ImportError:
+    TELETHON_AVAILABLE = False
 
 logger = logging.getLogger("group_creator")
 
 class TelegramGroupCreator:
-    """Класс для создания групповых чатов в Telegram"""
+    """Creates and manages Telegram group chats for deals."""
     
-    def __init__(self, api_id: str = None, api_hash: str = None, bot_token: str = None):
-        """
-        Инициализация клиента
+    def __init__(self, api_id: str, api_hash: str, bot_token: str):
+        if not TELETHON_AVAILABLE:
+            raise ImportError("telethon is required for group creation. Install with: pip install telethon")
         
-        Args:
-            api_id: API ID от Telegram (или из env TELEGRAM_API_ID)
-            api_hash: API Hash от Telegram (или из env TELEGRAM_API_HASH) 
-            bot_token: Bot token (или из env TELEGRAM_BOT_TOKEN)
-        """
-        self.api_id = api_id or os.getenv("TELEGRAM_API_ID")
-        self.api_hash = api_hash or os.getenv("TELEGRAM_API_HASH")
-        self.bot_token = bot_token or os.getenv("TELEGRAM_BOT_TOKEN")
+        self.api_id = int(api_id)
+        self.api_hash = api_hash
+        self.bot_token = bot_token
+        self.session_name = f"mono_fabrique_bot_{api_id}"
         
-        if not all([self.api_id, self.api_hash, self.bot_token]):
-            raise ValueError("Необходимо указать API_ID, API_HASH и BOT_TOKEN")
-        
-        # Создаем клиент для бота
-        self.client = Client(
-            "mono_fabrique_bot",
-            api_id=int(self.api_id),
-            api_hash=self.api_hash,
-            bot_token=self.bot_token
-        )
-        
+    @asynccontextmanager
+    async def get_client(self):
+        """Context manager for Telegram client."""
+        client = TelegramClient(self.session_name, self.api_id, self.api_hash)
+        try:
+            await client.start(bot_token=self.bot_token)
+            logger.info("Telegram client started successfully")
+            yield client
+        except Exception as e:
+            logger.error(f"Failed to start Telegram client: {e}")
+            raise
+        finally:
+            try:
+                await client.disconnect()
+                logger.info("Telegram client disconnected")
+            except:
+                pass
+    
     async def create_deal_group(
         self, 
         deal_id: int, 
@@ -64,187 +59,192 @@ class TelegramGroupCreator:
         deal_title: str,
         factory_name: str,
         buyer_name: str
-    ) -> Tuple[Optional[int], Optional[str]]:
+    ) -> Tuple[Optional[int], str]:
         """
-        Создает групповой чат для сделки
+        Create a group chat for a deal.
         
-        Args:
-            deal_id: ID сделки
-            buyer_id: Telegram ID покупателя
-            factory_id: Telegram ID фабрики
-            admin_ids: Список Telegram ID администраторов
-            deal_title: Название заказа
-            factory_name: Название фабрики
-            buyer_name: Имя покупателя
-            
         Returns:
-            Tuple[chat_id, invite_link] или (None, error_message)
+            Tuple[Optional[int], str]: (chat_id, status_message)
         """
+        if not TELETHON_AVAILABLE:
+            return None, "Telethon not available"
+        
+        group_title = f"🤝 Сделка #{deal_id} - {deal_title[:20]}..."
+        
         try:
-            async with self.client:
-                # Создаем группу
-                group_title = f"Сделка #{deal_id} - {deal_title[:20]}..."
+            async with self.get_client() as client:
+                # Get bot entity
+                try:
+                    bot_entity = await client.get_me()
+                    logger.info(f"Bot entity: {bot_entity.username}")
+                except Exception as e:
+                    logger.error(f"Failed to get bot entity: {e}")
+                    return None, f"Failed to get bot entity: {e}"
                 
-                # Собираем всех участников
-                participants = [buyer_id, factory_id] + admin_ids
+                # Get user entities
+                user_entities = {}
+                all_user_ids = [buyer_id, factory_id] + admin_ids
                 
-                # Создаем группу с участниками
-                group = await self.client.create_group(
-                    title=group_title,
-                    users=participants
-                )
+                for user_id in all_user_ids:
+                    try:
+                        entity = await client.get_entity(user_id)
+                        user_entities[user_id] = entity
+                        logger.info(f"Got entity for user {user_id}: {getattr(entity, 'username', 'no username')}")
+                    except Exception as e:
+                        logger.warning(f"Could not get entity for user {user_id}: {e}")
+                        # Don't fail completely, just skip this user
+                        continue
                 
-                chat_id = group.id
+                if len(user_entities) < 2:
+                    return None, f"Could not get entities for enough users. Got {len(user_entities)} out of {len(all_user_ids)}"
                 
-                # Устанавливаем описание группы
-                description = (
-                    f"Групповой чат по сделке #{deal_id}\n"
-                    f"📦 Заказ: {deal_title}\n"
-                    f"🏭 Фабрика: {factory_name}\n"
-                    f"👤 Заказчик: {buyer_name}\n\n"
-                    f"Здесь вы можете обсуждать детали заказа и отслеживать прогресс."
-                )
+                # Create group chat (legacy groups work better than supergroups for small chats)
+                try:
+                    # Start with buyer and factory
+                    initial_users = []
+                    if buyer_id in user_entities:
+                        initial_users.append(user_entities[buyer_id])
+                    if factory_id in user_entities and factory_id != buyer_id:
+                        initial_users.append(user_entities[factory_id])
+                    
+                    if not initial_users:
+                        return None, "No valid users to create group with"
+                    
+                    # Create the group
+                    result = await client(CreateChatRequest(
+                        users=initial_users,
+                        title=group_title
+                    ))
+                    
+                    # Extract chat ID
+                    if hasattr(result, 'chats') and result.chats:
+                        chat = result.chats[0]
+                        chat_id = -chat.id  # Make it negative for group chats
+                        logger.info(f"Created group chat with ID: {chat_id}")
+                    else:
+                        return None, "Failed to get chat ID from create result"
+                    
+                except Exception as e:
+                    logger.error(f"Failed to create group chat: {e}")
+                    return None, f"Failed to create group: {e}"
                 
-                await self.client.set_chat_description(chat_id, description)
+                # Add remaining users (admins)
+                added_users = [buyer_id, factory_id]
+                for user_id in admin_ids:
+                    if user_id in user_entities and user_id not in added_users:
+                        try:
+                            await client(AddChatUserRequest(
+                                chat_id=chat.id,  # Use positive ID for adding users
+                                user_id=user_entities[user_id],
+                                fwd_limit=0
+                            ))
+                            logger.info(f"Added admin {user_id} to group")
+                            added_users.append(user_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to add admin {user_id}: {e}")
+                            # Don't fail completely
+                            continue
                 
-                # Создаем инвайт-ссылку на случай, если кто-то покинет группу
-                invite_link = await self.client.create_chat_invite_link(chat_id)
+                # Send welcome message
+                try:
+                    welcome_message = (
+                        f"🤝 <b>Групповой чат сделки #{deal_id}</b>\n\n"
+                        f"📦 <b>Заказ:</b> {deal_title}\n"
+                        f"🏭 <b>Фабрика:</b> {factory_name}\n"
+                        f"👤 <b>Заказчик:</b> {buyer_name}\n\n"
+                        f"💬 Здесь вы можете обсуждать детали заказа, делиться файлами и отслеживать прогресс.\n\n"
+                        f"ℹ️ Все сообщения сохраняются для безопасности сделки."
+                    )
+                    
+                    await client.send_message(chat_id, welcome_message, parse_mode='html')
+                    logger.info(f"Sent welcome message to group {chat_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to send welcome message: {e}")
+                    # Group is created, so don't fail
                 
-                # Отправляем приветственное сообщение
-                welcome_msg = (
-                    f"🤝 <b>Добро пожаловать в чат сделки #{deal_id}!</b>\n\n"
-                    f"📦 Заказ: {deal_title}\n"
-                    f"🏭 Фабрика: {factory_name}\n"
-                    f"👤 Заказчик: {buyer_name}\n\n"
-                    f"Здесь вы можете:\n"
-                    f"• Обсуждать детали заказа\n"
-                    f"• Задавать вопросы\n"
-                    f"• Отслеживать прогресс\n"
-                    f"• Делиться фото и документами\n\n"
-                    f"Администрация платформы участвует в чате для решения любых вопросов."
-                )
+                # Wait a bit for group to fully initialize
+                await asyncio.sleep(1)
                 
-                await self.client.send_message(chat_id, welcome_msg)
+                # Verify group exists by getting its info
+                try:
+                    chat_info = await client.get_entity(chat_id)
+                    logger.info(f"Verified group exists: {chat_info.title}")
+                    return chat_id, f"Group created successfully with {len(added_users)} members"
+                except Exception as e:
+                    logger.error(f"Failed to verify created group: {e}")
+                    return None, f"Group created but verification failed: {e}"
                 
-                logger.info(f"Created group {chat_id} for deal {deal_id}")
-                return chat_id, invite_link.invite_link
-                
-        except UserPrivacyRestricted as e:
-            error_msg = "Один из участников ограничил добавление в группы"
-            logger.error(f"Privacy error creating group for deal {deal_id}: {e}")
-            return None, error_msg
-            
-        except UserNotMutualContact as e:
-            error_msg = "Не все участники являются взаимными контактами"
-            logger.error(f"Contact error creating group for deal {deal_id}: {e}")
-            return None, error_msg
-            
-        except FloodWait as e:
-            error_msg = f"Превышен лимит запросов. Попробуйте через {e.x} секунд"
-            logger.error(f"Flood wait creating group for deal {deal_id}: {e}")
-            return None, error_msg
-            
         except Exception as e:
-            error_msg = f"Ошибка создания группы: {str(e)}"
-            logger.error(f"Error creating group for deal {deal_id}: {e}")
-            return None, error_msg
+            logger.error(f"Unexpected error creating group: {e}")
+            return None, f"Unexpected error: {e}"
     
-    async def add_user_to_group(self, chat_id: int, user_id: int) -> bool:
-        """
-        Добавляет пользователя в существующую группу
+    async def get_group_info(self, chat_id: int) -> Optional[Dict[str, Any]]:
+        """Get information about a group chat."""
+        if not TELETHON_AVAILABLE:
+            return None
         
-        Args:
-            chat_id: ID группы
-            user_id: Telegram ID пользователя
-            
-        Returns:
-            True если успешно, False если ошибка
-        """
         try:
-            async with self.client:
-                await self.client.add_chat_members(chat_id, user_id)
-                logger.info(f"Added user {user_id} to group {chat_id}")
-                return True
-                
-        except UserAlreadyParticipant:
-            logger.info(f"User {user_id} already in group {chat_id}")
-            return True
-            
+            async with self.get_client() as client:
+                try:
+                    chat = await client.get_entity(chat_id)
+                    
+                    # Get participants count
+                    try:
+                        participants = await client.get_participants(chat)
+                        members_count = len(participants)
+                    except:
+                        members_count = 0
+                    
+                    return {
+                        'id': chat_id,
+                        'title': getattr(chat, 'title', 'Unknown'),
+                        'members_count': members_count,
+                        'type': 'group'
+                    }
+                except errors.PeerIdInvalidError:
+                    logger.warning(f"Group {chat_id} not found or invalid")
+                    return None
+                except Exception as e:
+                    logger.error(f"Error getting group info for {chat_id}: {e}")
+                    return None
         except Exception as e:
-            logger.error(f"Error adding user {user_id} to group {chat_id}: {e}")
-            return False
+            logger.error(f"Client error getting group info: {e}")
+            return None
+    
+    async def create_invite_link(self, chat_id: int) -> Optional[str]:
+        """Create an invite link for the group."""
+        if not TELETHON_AVAILABLE:
+            return None
+        
+        try:
+            async with self.get_client() as client:
+                try:
+                    # For regular groups, export chat invite
+                    result = await client(ExportChatInviteRequest(
+                        peer=chat_id
+                    ))
+                    return result.link
+                except Exception as e:
+                    logger.error(f"Failed to create invite link for {chat_id}: {e}")
+                    return None
+        except Exception as e:
+            logger.error(f"Client error creating invite link: {e}")
+            return None
     
     async def send_message_to_group(self, chat_id: int, message: str) -> bool:
-        """
-        Отправляет сообщение в группу
-        
-        Args:
-            chat_id: ID группы
-            message: Текст сообщения
-            
-        Returns:
-            True если успешно, False если ошибка
-        """
-        try:
-            async with self.client:
-                await self.client.send_message(chat_id, message)
-                return True
-                
-        except Exception as e:
-            logger.error(f"Error sending message to group {chat_id}: {e}")
+        """Send a message to the group."""
+        if not TELETHON_AVAILABLE:
             return False
-    
-    async def create_invite_link(self, chat_id: int, expire_date: int = None) -> Optional[str]:
-        """
-        Создает инвайт-ссылку для группы
         
-        Args:
-            chat_id: ID группы
-            expire_date: Unix timestamp истечения ссылки (необязательно)
-            
-        Returns:
-            Инвайт-ссылка или None при ошибке
-        """
         try:
-            async with self.client:
-                invite_link = await self.client.create_chat_invite_link(
-                    chat_id, 
-                    expire_date=expire_date
-                )
-                return invite_link.invite_link
-                
+            async with self.get_client() as client:
+                await client.send_message(chat_id, message, parse_mode='html')
+                return True
         except Exception as e:
-            logger.error(f"Error creating invite link for group {chat_id}: {e}")
-            return None
-    
-    async def get_group_info(self, chat_id: int) -> Optional[dict]:
-        """
-        Получает информацию о группе
-        
-        Args:
-            chat_id: ID группы
-            
-        Returns:
-            Словарь с информацией о группе или None при ошибке
-        """
-        try:
-            async with self.client:
-                chat = await self.client.get_chat(chat_id)
-                
-                return {
-                    "id": chat.id,
-                    "title": chat.title,
-                    "description": chat.description,
-                    "members_count": chat.members_count,
-                    "type": str(chat.type),
-                    "username": chat.username
-                }
-                
-        except Exception as e:
-            logger.error(f"Error getting group info for {chat_id}: {e}")
-            return None
+            logger.error(f"Failed to send message to group {chat_id}: {e}")
+            return False
 
-# Функция-обертка для интеграции с основным ботом
+# Main function to create deal chat
 async def create_deal_chat_real(
     deal_id: int,
     buyer_id: int, 
@@ -253,46 +253,67 @@ async def create_deal_chat_real(
     deal_title: str,
     factory_name: str,
     buyer_name: str
-) -> Tuple[Optional[int], Optional[str]]:
+) -> Tuple[Optional[int], str]:
     """
-    Создает реальный групповой чат для сделки
+    Create a real group chat for a deal.
     
     Returns:
-        Tuple[chat_id, invite_link] или (None, error_message)
+        Tuple[Optional[int], str]: (chat_id, status_message)
     """
-    creator = TelegramGroupCreator()
+    # Get environment variables
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH") 
+    bot_token = os.getenv("BOT_TOKEN")
     
-    return await creator.create_deal_group(
-        deal_id=deal_id,
-        buyer_id=buyer_id,
-        factory_id=factory_id,
-        admin_ids=admin_ids,
-        deal_title=deal_title,
-        factory_name=factory_name,
-        buyer_name=buyer_name
-    )
+    # Validate environment variables
+    if not api_id:
+        return None, "TELEGRAM_API_ID not set"
+    if not api_hash:
+        return None, "TELEGRAM_API_HASH not set"
+    if not bot_token:
+        return None, "BOT_TOKEN not set"
+    
+    try:
+        creator = TelegramGroupCreator(api_id, api_hash, bot_token)
+        return await creator.create_deal_group(
+            deal_id=deal_id,
+            buyer_id=buyer_id,
+            factory_id=factory_id,
+            admin_ids=admin_ids,
+            deal_title=deal_title,
+            factory_name=factory_name,
+            buyer_name=buyer_name
+        )
+    except Exception as e:
+        logger.error(f"Error in create_deal_chat_real: {e}")
+        return None, str(e)
 
-# Пример использования
-async def example_usage():
-    """Пример использования модуля"""
+# Test function
+async def test_group_creation():
+    """Test function for group creation."""
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH")
+    bot_token = os.getenv("BOT_TOKEN")
     
-    # Создание группы для сделки
-    chat_id, result = await create_deal_chat_real(
-        deal_id=123,
-        buyer_id=111111111,  # Telegram ID покупателя
-        factory_id=222222222,  # Telegram ID фабрики  
-        admin_ids=[333333333],  # Telegram ID админов
-        deal_title="Футболки с принтом 500шт",
-        factory_name="Текстиль Плюс",
-        buyer_name="Светлана"
+    if not all([api_id, api_hash, bot_token]):
+        print("Missing environment variables")
+        return
+    
+    creator = TelegramGroupCreator(api_id, api_hash, bot_token)
+    
+    # Test with some dummy data
+    chat_id, result = await creator.create_deal_group(
+        deal_id=999,
+        buyer_id=123456789,  # Replace with real user ID for testing
+        factory_id=987654321,  # Replace with real user ID for testing  
+        admin_ids=[],
+        deal_title="Test Deal",
+        factory_name="Test Factory",
+        buyer_name="Test Buyer"
     )
     
-    if chat_id:
-        print(f"Группа создана! ID: {chat_id}")
-        print(f"Инвайт-ссылка: {result}")
-    else:
-        print(f"Ошибка: {result}")
+    print(f"Result: {result}")
+    print(f"Chat ID: {chat_id}")
 
 if __name__ == "__main__":
-    # Запуск примера
-    asyncio.run(example_usage())
+    asyncio.run(test_group_creation())
