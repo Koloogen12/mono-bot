@@ -46,7 +46,7 @@ class TelegramGroupCreator:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-        client = TelegramClient(self.session_name, self.api_id, self.api_hash, loop=loop)
+        client = TelegramClient(self.fabrique, self.api_id, self.api_hash, loop=loop)
         try:
             await client.start()  # USER SESSION! Will ask phone/code on first run
             logger.info("Telegram client (user) started successfully")
