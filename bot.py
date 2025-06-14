@@ -41,7 +41,17 @@ Env variables
 * `ADMIN_IDS`    – comma-separated admin Telegram IDs
 """
 from __future__ import annotations
-from group_creator import create_deal_chat_real, TelegramGroupCreator
+
+try:
+    from group_creator import create_deal_chat_real, TelegramGroupCreator
+    GROUP_CREATOR_AVAILABLE = True
+    logger.info("Group creator module loaded successfully")
+except ImportError as e:
+    logger.error(f"Failed to import group_creator: {e}")
+    GROUP_CREATOR_AVAILABLE = False
+except Exception as e:
+    logger.error(f"Error loading group_creator: {e}")
+    GROUP_CREATOR_AVAILABLE = False
 
 import asyncio
 import logging
@@ -2464,9 +2474,15 @@ async def cancel_edit_proposal(call: CallbackQuery, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 #  ДОРАБОТКА: Групповые чаты для сделок
 # ---------------------------------------------------------------------------
-
 async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int | None:
-    """Create group chat for deal."""
+    """Create group chat for deal with fallback."""
+    
+    # Проверяем доступность модуля
+    if not GROUP_CREATOR_AVAILABLE:
+        logger.warning("Group creator not available, using fallback notification")
+        await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+        return None
+    
     try:
         # Get deal info
         deal = q1("""
@@ -2479,14 +2495,38 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         """, (deal_id,))
         
         if not deal:
+            logger.error(f"Deal {deal_id} not found for chat creation")
             return None
+        
+        # Проверяем переменные окружения
+        api_id = os.getenv("TELEGRAM_API_ID")
+        api_hash = os.getenv("TELEGRAM_API_HASH")
+        bot_token = os.getenv("BOT_TOKEN")
+        
+        if not api_id:
+            logger.error("TELEGRAM_API_ID not found in environment")
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            return None
+            
+        if not api_hash:
+            logger.error("TELEGRAM_API_HASH not found in environment")
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            return None
+            
+        if not bot_token:
+            logger.error("BOT_TOKEN not found in environment")
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id)
+            return None
+        
+        logger.info(f"Creating real group chat for deal {deal_id}")
+        logger.info(f"API_ID: {api_id[:4]}***")  # Показываем только первые 4 символа для безопасности
         
         # Создаем реальную группу
         chat_id, result = await create_deal_chat_real(
             deal_id=deal_id,
             buyer_id=buyer_id,
             factory_id=factory_id,
-            admin_ids=ADMIN_IDS,  # Используем существующий список админов
+            admin_ids=ADMIN_IDS,
             deal_title=deal['title'],
             factory_name=deal['factory_name'],
             buyer_name=deal['buyer_name']
@@ -2498,46 +2538,71 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
             logger.info(f"Created real group chat {chat_id} for deal {deal_id}")
             return chat_id
         else:
-            # Если не удалось создать группу, отправляем уведомления участникам
+            # Если не удалось создать группу, используем fallback
             logger.error(f"Failed to create group for deal {deal_id}: {result}")
-            
-            # Уведомляем участников о том, что группа не создана
-            error_message = (
-                f"⚠️ <b>Не удалось создать групповой чат для сделки #{deal_id}</b>\n\n"
-                f"Причина: {result}\n\n"
-                f"Вы можете общаться напрямую друг с другом или обратиться в поддержку."
-            )
-            
-            # Send to buyer
-            await bot.send_message(buyer_id, error_message)
-            
-            # Send to factory
-            await bot.send_message(factory_id, error_message)
-            
-            # Notify admins
-            for admin_id in ADMIN_IDS:
-                try:
-                    await bot.send_message(
-                        admin_id,
-                        f"🚨 Не удалось создать чат для сделки #{deal_id}\n"
-                        f"Ошибка: {result}\n"
-                        f"Покупатель: {buyer_id}\n"
-                        f"Фабрика: {factory_id}"
-                    )
-                except:
-                    pass
-            
+            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error=result)
             return None
         
     except Exception as e:
         logger.error(f"Error creating deal chat for deal {deal_id}: {e}")
+        await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error=str(e))
         return None
 
-# Обновите обработчик deal_chat_handler:
+# 5. Добавьте функцию fallback для случаев когда группа не создается:
+async def send_fallback_chat_notification(deal_id: int, buyer_id: int, factory_id: int, error: str = None):
+    """Send fallback notification when group chat creation fails."""
+    
+    deal = q1("""
+        SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
+        FROM deals d
+        JOIN orders o ON d.order_id = o.id
+        JOIN factories f ON d.factory_id = f.tg_id
+        JOIN users u ON d.buyer_id = u.tg_id
+        WHERE d.id = ?
+    """, (deal_id,))
+    
+    if not deal:
+        return
+    
+    fallback_message = (
+        f"💬 <b>Сделка #{deal_id} создана!</b>\n\n"
+        f"📦 Заказ: {deal['title']}\n"
+        f"🏭 Фабрика: {deal['factory_name']}\n"
+        f"👤 Заказчик: {deal['buyer_name']}\n\n"
+        f"⚠️ Групповой чат временно недоступен.\n"
+        f"Вы можете общаться напрямую:\n\n"
+        f"👤 Заказчик: @{deal['buyer_name']} (ID: {buyer_id})\n"
+        f"🏭 Фабрика: @{deal['factory_name']} (ID: {factory_id})\n\n"
+        f"Или обратитесь в поддержку для решения вопросов."
+    )
+    
+    # Send to buyer
+    try:
+        await bot.send_message(buyer_id, fallback_message)
+    except Exception as e:
+        logger.error(f"Failed to send fallback to buyer {buyer_id}: {e}")
+    
+    # Send to factory
+    try:
+        await bot.send_message(factory_id, fallback_message)
+    except Exception as e:
+        logger.error(f"Failed to send fallback to factory {factory_id}: {e}")
+    
+    # Notify admins
+    admin_message = f"🚨 Не удалось создать чат для сделки #{deal_id}"
+    if error:
+        admin_message += f"\nОшибка: {error}"
+    
+    for admin_id in ADMIN_IDS:
+        try:
+            await bot.send_message(admin_id, admin_message)
+        except:
+            pass
 
+# 6. Обновите deal_chat_handler для лучшей обработки ошибок:
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
-    """Handle deal chat access."""
+    """Handle deal chat access with improved error handling."""
     deal_id = int(call.data.split(":", 1)[1])
     
     # Get deal info
@@ -2554,11 +2619,46 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
         await call.answer("Сделка не найдена", show_alert=True)
         return
     
+    # Проверяем доступность модуля создания групп
+    if not GROUP_CREATOR_AVAILABLE:
+        chat_info = (
+            f"💬 <b>Чат сделки #{deal_id}</b>\n\n"
+            f"📦 {deal['title']}\n"
+            f"🏭 {deal['factory_name']}\n"
+            f"👤 {deal['buyer_name']}\n\n"
+            f"⚠️ Групповые чаты временно недоступны.\n"
+            f"Обратитесь в поддержку или общайтесь напрямую."
+        )
+        await call.message.answer(chat_info)
+        await call.answer()
+        return
+    
     # Check if chat already exists
     if deal['chat_id']:
-        # Попробуем получить информацию о группе
         try:
-            creator = TelegramGroupCreator()
+            # Проверяем переменные окружения перед созданием creator
+            api_id = os.getenv("TELEGRAM_API_ID")
+            api_hash = os.getenv("TELEGRAM_API_HASH")
+            bot_token = os.getenv("BOT_TOKEN")
+            
+            if not all([api_id, api_hash, bot_token]):
+                missing = []
+                if not api_id: missing.append("TELEGRAM_API_ID")
+                if not api_hash: missing.append("TELEGRAM_API_HASH") 
+                if not bot_token: missing.append("BOT_TOKEN")
+                
+                logger.error(f"Missing environment variables: {', '.join(missing)}")
+                
+                chat_info = (
+                    f"❌ <b>Ошибка конфигурации чата</b>\n\n"
+                    f"Отсутствуют переменные окружения для создания чата.\n"
+                    f"Обратитесь к администратору."
+                )
+                await call.message.answer(chat_info)
+                await call.answer()
+                return
+            
+            creator = TelegramGroupCreator(api_id, api_hash, bot_token)
             group_info = await creator.get_group_info(int(deal['chat_id']))
             
             if group_info:
@@ -2569,7 +2669,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
                     f"👤 {deal['buyer_name']}\n\n"
                     f"👥 Участников: {group_info['members_count']}\n"
                     f"📋 Название: {group_info['title']}\n\n"
-                    f"Чат активен. Если вы покинули группу, нажмите кнопку ниже для получения новой ссылки."
+                    f"Чат активен. Если вы покинули группу, нажмите кнопку ниже."
                 )
                 
                 # Создаем новую инвайт-ссылку
@@ -2584,11 +2684,11 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
                 kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
                 
             else:
-                # Группа была удалена или недоступна
+                # Группа недоступна
                 chat_info = (
                     f"⚠️ <b>Чат сделки #{deal_id} недоступен</b>\n\n"
-                    f"Возможно, группа была удалена или бот был исключен.\n"
-                    f"Создадим новый чат?"
+                    f"Группа была удалена или бот исключен.\n"
+                    f"Создать новый чат?"
                 )
                 
                 kb = InlineKeyboardMarkup(inline_keyboard=[[
@@ -2599,7 +2699,8 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
             logger.error(f"Error checking group info for deal {deal_id}: {e}")
             chat_info = (
                 f"❌ <b>Ошибка доступа к чату</b>\n\n"
-                f"Не удалось получить информацию о чате сделки #{deal_id}."
+                f"Не удалось получить информацию о чате сделки #{deal_id}.\n"
+                f"Ошибка: {str(e)}"
             )
             kb = None
             
@@ -2608,10 +2709,6 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
         chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
         
         if chat_id:
-            # Создаем инвайт-ссылку
-            creator = TelegramGroupCreator()
-            invite_link = await creator.create_invite_link(chat_id)
-            
             chat_info = (
                 f"✅ <b>Чат сделки #{deal_id} создан!</b>\n\n"
                 f"📦 {deal['title']}\n"
@@ -2619,102 +2716,35 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
                 f"👤 {deal['buyer_name']}\n\n"
                 f"Все участники добавлены в групповой чат."
             )
-            
-            buttons = []
-            if invite_link:
-                buttons.append([
-                    InlineKeyboardButton(text="💬 Перейти в чат", url=invite_link)
-                ])
-            
-            kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+            kb = None
         else:
             chat_info = (
-                f"❌ <b>Ошибка создания чата</b>\n\n"
-                f"Не удалось создать групповой чат для сделки #{deal_id}.\n"
-                f"Вы можете общаться напрямую или обратиться в поддержку."
+                f"❌ <b>Не удалось создать чат</b>\n\n"
+                f"Обратитесь в поддержку или общайтесь напрямую."
             )
             kb = None
     
     await call.message.answer(chat_info, reply_markup=kb)
     await call.answer()
 
-# Добавьте новый обработчик для пересоздания чата:
-
-@router.callback_query(F.data.startswith("recreate_chat:"))
-async def recreate_chat_handler(call: CallbackQuery) -> None:
-    """Recreate chat for deal."""
-    deal_id = int(call.data.split(":", 1)[1])
-    
-    # Get deal info
-    deal = q1("""
-        SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
-        FROM deals d
-        JOIN orders o ON d.order_id = o.id
-        JOIN factories f ON d.factory_id = f.tg_id
-        JOIN users u ON d.buyer_id = u.tg_id
-        WHERE d.id = ? AND (d.buyer_id = ? OR d.factory_id = ?)
-    """, (deal_id, call.from_user.id, call.from_user.id))
-    
-    if not deal:
-        await call.answer("Сделка не найдена", show_alert=True)
+# 7. Добавьте команду для проверки переменных окружения (только для админов):
+@router.message(Command("checkenv"))
+async def cmd_check_env(msg: Message) -> None:
+    """Check environment variables for admin."""
+    if msg.from_user.id not in ADMIN_IDS:
         return
     
-    # Clear old chat_id
-    run("UPDATE deals SET chat_id = NULL WHERE id = ?", (deal_id,))
+    api_id = os.getenv("TELEGRAM_API_ID")
+    api_hash = os.getenv("TELEGRAM_API_HASH") 
+    bot_token = os.getenv("BOT_TOKEN")
     
-    # Create new chat
-    chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
+    env_status = f"🔧 <b>Статус переменных окружения:</b>\n\n"
+    env_status += f"TELEGRAM_API_ID: {'✅' if api_id else '❌'} ({api_id[:4]}*** если есть)\n"
+    env_status += f"TELEGRAM_API_HASH: {'✅' if api_hash else '❌'} ({api_hash[:4]}*** если есть)\n"
+    env_status += f"BOT_TOKEN: {'✅' if bot_token else '❌'}\n"
+    env_status += f"GROUP_CREATOR_AVAILABLE: {'✅' if GROUP_CREATOR_AVAILABLE else '❌'}\n"
     
-    if chat_id:
-        creator = TelegramGroupCreator()
-        invite_link = await creator.create_invite_link(chat_id)
-        
-        response = (
-            f"✅ <b>Новый чат создан!</b>\n\n"
-            f"Все участники добавлены в обновленный групповой чат."
-        )
-        
-        buttons = []
-        if invite_link:
-            buttons.append([
-                InlineKeyboardButton(text="💬 Перейти в чат", url=invite_link)
-            ])
-        
-        kb = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
-        
-        await call.message.edit_text(response, reply_markup=kb)
-    else:
-        await call.message.edit_text(
-            "❌ Не удалось создать новый чат. Обратитесь в поддержку."
-        )
-    
-    await call.answer()
-
-# Добавьте утилитарную функцию для отправки сообщений в чат сделки:
-
-async def send_deal_update(deal_id: int, message: str) -> bool:
-    """
-    Отправляет обновление в чат сделки
-    
-    Args:
-        deal_id: ID сделки
-        message: Сообщение для отправки
-        
-    Returns:
-        True если успешно, False если ошибка
-    """
-    try:
-        deal = q1("SELECT chat_id FROM deals WHERE id = ?", (deal_id,))
-        
-        if not deal or not deal['chat_id']:
-            return False
-        
-        creator = TelegramGroupCreator()
-        return await creator.send_message_to_group(int(deal['chat_id']), message)
-        
-    except Exception as e:
-        logger.error(f"Error sending deal update for {deal_id}: {e}")
-        return False
+    await msg.answer(env_status)
 
 # ---------------------------------------------------------------------------
 #  ДОРАБОТКА: Отмена сделок с предупреждением
