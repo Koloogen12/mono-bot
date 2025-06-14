@@ -2769,7 +2769,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
                 return
             
             # Проверяем существование группы
-            creator = TelegramGroupCreator(api_id, api_hash, bot_token)
+            creator = TelegramGroupCreator(api_id, api_hash)
             group_info = await creator.get_group_info(chat_id)
             
             if group_info:
@@ -2897,12 +2897,10 @@ async def cmd_check_env(msg: Message) -> None:
     
     api_id = os.getenv("TELEGRAM_API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH") 
-    bot_token = os.getenv("BOT_TOKEN")
     
     env_status = f"🔧 <b>Статус переменных окружения:</b>\n\n"
     env_status += f"TELEGRAM_API_ID: {'✅' if api_id else '❌'} {f'({api_id[:4]}***)' if api_id else ''}\n"
     env_status += f"TELEGRAM_API_HASH: {'✅' if api_hash else '❌'} {f'({api_hash[:4]}***)' if api_hash else ''}\n"
-    env_status += f"BOT_TOKEN: {'✅' if bot_token else '❌'}\n"
     env_status += f"GROUP_CREATOR_AVAILABLE: {'✅' if GROUP_CREATOR_AVAILABLE else '❌'}\n"
     
     if GROUP_CREATOR_AVAILABLE:
@@ -2919,12 +2917,10 @@ async def cmd_check_env(msg: Message) -> None:
     
     api_id = os.getenv("TELEGRAM_API_ID")
     api_hash = os.getenv("TELEGRAM_API_HASH") 
-    bot_token = os.getenv("BOT_TOKEN")
     
     env_status = f"🔧 <b>Статус переменных окружения:</b>\n\n"
     env_status += f"TELEGRAM_API_ID: {'✅' if api_id else '❌'} {f'({api_id[:4]}***)' if api_id else ''}\n"
     env_status += f"TELEGRAM_API_HASH: {'✅' if api_hash else '❌'} {f'({api_hash[:4]}***)' if api_hash else ''}\n"
-    env_status += f"BOT_TOKEN: {'✅' if bot_token else '❌'}\n"
     env_status += f"GROUP_CREATOR_AVAILABLE: {'✅' if GROUP_CREATOR_AVAILABLE else '❌'}\n"
     
     if GROUP_CREATOR_AVAILABLE:
@@ -2947,13 +2943,12 @@ async def cmd_test_group(msg: Message) -> None:
     try:
         api_id = os.getenv("TELEGRAM_API_ID")
         api_hash = os.getenv("TELEGRAM_API_HASH")
-        bot_token = os.getenv("BOT_TOKEN")
         
-        if not all([api_id, api_hash, bot_token]):
+        if not all([api_id, api_hash]):
             await msg.answer("❌ Отсутствуют переменные окружения")
             return
         
-        creator = TelegramGroupCreator(api_id, api_hash, bot_token)
+        creator = TelegramGroupCreator(api_id, api_hash)
         
         # Test with admin as both buyer and factory (for testing)
         chat_id, result = await creator.create_deal_group(
@@ -6350,7 +6345,6 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         # Проверяем переменные окружения
         api_id = os.getenv("TELEGRAM_API_ID")
         api_hash = os.getenv("TELEGRAM_API_HASH")
-        bot_token = os.getenv("BOT_TOKEN")
         
         if not api_id:
             logger.error("TELEGRAM_API_ID not found in environment")
@@ -6362,10 +6356,6 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
             await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing TELEGRAM_API_HASH")
             return None
             
-        if not bot_token:
-            logger.error("BOT_TOKEN not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing BOT_TOKEN")
-            return None
         
         logger.info(f"Creating real group chat for deal {deal_id}")
         logger.info(f"Participants: buyer={buyer_id}, factory={factory_id}, admins={ADMIN_IDS}")
@@ -6446,13 +6436,11 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
             # Проверяем переменные окружения
             api_id = os.getenv("TELEGRAM_API_ID")
             api_hash = os.getenv("TELEGRAM_API_HASH")
-            bot_token = os.getenv("BOT_TOKEN")
             
-            if not all([api_id, api_hash, bot_token]):
+            if not all([api_id, api_hash]):
                 missing = []
                 if not api_id: missing.append("TELEGRAM_API_ID")
                 if not api_hash: missing.append("TELEGRAM_API_HASH") 
-                if not bot_token: missing.append("BOT_TOKEN")
                 
                 logger.error(f"Missing environment variables: {', '.join(missing)}")
                 
@@ -6466,7 +6454,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
                 return
             
             # Проверяем существование группы
-            creator = TelegramGroupCreator(api_id, api_hash, bot_token)
+            creator = TelegramGroupCreator(api_id, api_hash)
             group_info = await creator.get_group_info(int(deal['chat_id']))
             
             if group_info:
@@ -6535,7 +6523,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
         if chat_id:
             # Получаем ссылку на созданный чат
             try:
-                creator = TelegramGroupCreator(os.getenv("TELEGRAM_API_ID"), os.getenv("TELEGRAM_API_HASH"), os.getenv("BOT_TOKEN"))
+                creator = TelegramGroupCreator(os.getenv("TELEGRAM_API_ID"), os.getenv("TELEGRAM_API_HASH"))
                 invite_link = await creator.create_invite_link(chat_id)
                 
                 chat_info = (
