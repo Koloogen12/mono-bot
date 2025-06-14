@@ -9,14 +9,17 @@ from typing import Optional, Tuple, Dict, Any, List
 from contextlib import asynccontextmanager
 
 try:
+    import telethon
+    TELETHON_AVAILABLE = True
+except ImportError:
+    TELETHON_AVAILABLE = False
+
+if TELETHON_AVAILABLE:
     from telethon import TelegramClient, errors
     from telethon.tl.functions.messages import CreateChatRequest, AddChatUserRequest
     from telethon.tl.functions.channels import CreateChannelRequest, InviteToChannelRequest
     from telethon.tl.functions.channels import ExportChatInviteRequest
     from telethon.tl.types import PeerChannel, PeerChat, InputPeerUser
-    TELETHON_AVAILABLE = True
-except ImportError:
-    TELETHON_AVAILABLE = False
 
 logger = logging.getLogger("group_creator")
 
