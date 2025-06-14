@@ -48,6 +48,7 @@ import os
 import re
 import sqlite3
 import json
+import sys
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 from enum import Enum
@@ -5767,7 +5768,7 @@ if __name__ == "__main__":
     """Start the bot in webhook mode."""
     if not WEBHOOK_BASE:
         logger.error("Error: WEBHOOK_BASE env var required for webhook mode")
-        return
+        sys.exit(1)
     
     logger.info("Starting bot in webhook mode on port %s", PORT)
     
