@@ -34,8 +34,16 @@ class TelegramGroupCreator:
         
     @asynccontextmanager
     async def get_client(self):
-        """Context manager for Telegram client."""
-        client = TelegramClient(self.session_name, self.api_id, self.api_hash)
+        """Context manager for Telegram client with event loop handling."""
+        # Используем текущий event loop
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+        
+        client = TelegramClient(self.session_name, self.api_id, self.api_hash, loop=loop)
         try:
             await client.start(bot_token=self.bot_token)
             logger.info("Telegram client started successfully")
@@ -45,10 +53,11 @@ class TelegramGroupCreator:
             raise
         finally:
             try:
-                await client.disconnect()
-                logger.info("Telegram client disconnected")
-            except:
-                pass
+                if client.is_connected():
+                    await client.disconnect()
+                    logger.info("Telegram client disconnected")
+            except Exception as e:
+                logger.warning(f"Error disconnecting client: {e}")
     
     async def create_deal_group(
         self, 
