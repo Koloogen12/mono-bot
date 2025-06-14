@@ -3,5 +3,5 @@ yookassa>=3.0.0
 pyrogram
 tinkoff-api
 tgcrypto
-telethon>=1.28.0
+telethon
 python-dotenv>=1.0.0
