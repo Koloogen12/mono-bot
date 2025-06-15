@@ -119,6 +119,45 @@ try:
 except ModuleNotFoundError:
     pass
 
+# Добавьте в начало bot.py (после импортов):
+
+import os
+import glob
+
+def cleanup_old_sessions():
+    """Удаляет старые файлы сессий."""
+    try:
+        # Удаляем все .session файлы
+        session_files = glob.glob("*.session")
+        for file in session_files:
+            try:
+                os.remove(file)
+                logger.info(f"Removed old session file: {file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove {file}: {e}")
+        
+        # Также удаляем .session-journal файлы
+        journal_files = glob.glob("*.session-journal")
+        for file in journal_files:
+            try:
+                os.remove(file)
+                logger.info(f"Removed journal file: {file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove {file}: {e}")
+                
+    except Exception as e:
+        logger.error(f"Error during session cleanup: {e}")
+
+# Вызовите эту функцию в начале main():
+async def main() -> None:
+    """Main entry point."""
+    cleanup_old_sessions()  # Добавьте эту строку
+    
+    if BOT_MODE == "WEBHOOK":
+        await run_webhook()
+    else:
+        await run_polling()
+
 # ---------------------------------------------------------------------------
 #  Config & bootstrap
 # ---------------------------------------------------------------------------
