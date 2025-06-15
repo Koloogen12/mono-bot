@@ -4678,9 +4678,8 @@ async def view_order_proposals(call: CallbackQuery) -> None:
     await call.answer()
 @router.callback_query(F.data.startswith("choose_factory:"))
 async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
-    """Choose factory and create deal - ИСПРАВЛЕННАЯ ВЕРСИЯ."""
+    """Choose factory and create deal - ФИНАЛЬНАЯ ВЕРСИЯ без дублирования."""
     try:
-        # Парсим данные из callback
         parts = call.data.split(":")
         if len(parts) < 3:
             logger.error(f"Invalid callback data format: {call.data}")
@@ -4692,44 +4691,23 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         
         logger.info(f"User {call.from_user.id} trying to choose factory {factory_id} for order {order_id}")
         
-        # Сначала проверим существует ли заказ вообще
-        order_exists = q1("SELECT id, buyer_id, is_active FROM orders WHERE id = ?", (order_id,))
-        if not order_exists:
-            logger.error(f"Order {order_id} does not exist")
-            await call.answer("❌ Заказ не найден в системе", show_alert=True)
-            return
-        
-        # Проверим права доступа
-        if order_exists['buyer_id'] != call.from_user.id:
-            logger.error(f"Access denied: user {call.from_user.id} trying to access order {order_id} owned by {order_exists['buyer_id']}")
-            await call.answer("❌ У вас нет прав на этот заказ", show_alert=True)
-            return
-        
-        # Проверим активен ли заказ
-        if not order_exists['is_active']:
-            logger.warning(f"Order {order_id} is not active")
-            await call.answer("❌ Этот заказ больше не активен", show_alert=True)
-            return
-        
-        # Теперь получаем полную информацию о заказе
+        # Проверяем заказ
         order = q1("SELECT * FROM orders WHERE id = ? AND buyer_id = ?", (order_id, call.from_user.id))
         if not order:
-            logger.error(f"Failed to get full order info for {order_id}")
-            await call.answer("❌ Ошибка при получении данных заказа", show_alert=True)
+            await call.answer("❌ Заказ не найден", show_alert=True)
             return
         
-        # Проверяем существует ли уже активная сделка
+        # Проверяем нет ли активной сделки
         existing_deal = q1("""
             SELECT id, status FROM deals 
             WHERE order_id = ? AND status NOT IN ('CANCELLED')
         """, (order_id,))
         
         if existing_deal:
-            logger.warning(f"Order {order_id} already has active deal {existing_deal['id']} with status {existing_deal['status']}")
             await call.answer(f"❌ По этому заказу уже есть активная сделка (#{existing_deal['id']})", show_alert=True)
             return
         
-        # Проверяем существует ли предложение от этой фабрики
+        # Получаем предложение
         proposal = q1("""
             SELECT p.*, f.name as factory_name
             FROM proposals p
@@ -4738,30 +4716,12 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         """, (order_id, factory_id))
         
         if not proposal:
-            logger.error(f"Proposal not found for order {order_id} and factory {factory_id}")
             await call.answer("❌ Предложение от этой фабрики не найдено", show_alert=True)
             return
         
-        # Проверяем не было ли предложение уже принято
-        if proposal['is_accepted']:
-            logger.warning(f"Proposal for order {order_id} from factory {factory_id} already accepted")
-            await call.answer("❌ Это предложение уже было принято ранее", show_alert=True)
-            return
-        
-        # Проверяем существует ли фабрика
-        factory = q1("SELECT * FROM factories WHERE tg_id = ?", (factory_id,))
-        if not factory:
-            logger.error(f"Factory {factory_id} not found")
-            await call.answer("❌ Фабрика не найдена", show_alert=True)
-            return
-        
-        # Все проверки пройдены, создаем сделку
-        logger.info(f"Creating deal for order {order_id} and factory {factory_id}")
-        
-        # Calculate total amount
+        # Создаем сделку
         total_amount = proposal['price'] * order['quantity']
         
-        # Create deal
         deal_id = insert_and_get_id("""
             INSERT INTO deals
             (order_id, factory_id, buyer_id, amount, status, sample_cost)
@@ -4769,24 +4729,24 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         """, (order_id, factory_id, call.from_user.id, total_amount, proposal['sample_cost']))
         
         if not deal_id:
-            logger.error(f"Failed to create deal for order {order_id}")
             await call.answer("❌ Ошибка при создании сделки", show_alert=True)
             return
         
-        # Update proposal status
-        run("UPDATE proposals SET is_accepted = 1 WHERE order_id = ? AND factory_id = ?", 
-            (order_id, factory_id))
-        
-        # Deactivate order
+        # Обновляем статусы
+        run("UPDATE proposals SET is_accepted = 1 WHERE order_id = ? AND factory_id = ?", (order_id, factory_id))
         run("UPDATE orders SET is_active = 0 WHERE id = ?", (order_id,))
         
-        # Create deal chat
+        # ✅ ИСПРАВЛЕНО: Создаем чат только один раз
+        chat_id, invite_link = None, None
         try:
-            chat_id = await create_deal_chat(deal_id)
+            chat_id, invite_link = await create_deal_chat(deal_id)
             if chat_id:
-                logger.info(f"Created chat {chat_id} for deal {deal_id}")
+                logger.info(f"✅ Successfully created chat {chat_id} for deal {deal_id}")
+                # Сохраняем chat_id в базе (уже делается внутри create_deal_chat)
+            else:
+                logger.warning(f"⚠️ Chat not created for deal {deal_id}, but deal is valid")
         except Exception as e:
-            logger.error(f"Failed to create chat for deal {deal_id}: {e}")
+            logger.error(f"❌ Failed to create chat for deal {deal_id}: {e}")
             # Продолжаем выполнение, даже если чат не создался
         
         # Track event
@@ -4794,41 +4754,45 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
             'deal_id': deal_id,
             'order_id': order_id,
             'factory_id': factory_id,
-            'amount': total_amount
+            'amount': total_amount,
+            'has_chat': bool(chat_id)
         })
-
-        # Create deal chat automatically
-        try:
-            await create_deal_chat(deal_id)
-        except Exception as e:
-            logger.error(f"Failed to create chat for deal {deal_id}: {e}")
         
-        # Notify admins about new deal
+        # Notify admins
         await notify_admins(
             'deal_created',
             '🤝 Новая сделка создана!',
             f"Сделка #{deal_id}\n"
             f"Заказ: #Z-{order_id} - {order['title']}\n"
             f"Фабрика: {proposal['factory_name']}\n"
-            f"Сумма: {format_price(total_amount)} ₽",
+            f"Сумма: {format_price(total_amount)} ₽\n"
+            f"Чат: {'✅ Создан' if chat_id else '❌ Не создан'}",
             {
                 'buyer_id': call.from_user.id,
                 'factory_id': factory_id,
-                'category': order['category'],
-                'quantity': order['quantity']
+                'deal_id': deal_id,
+                'has_chat': bool(chat_id),
+                'chat_id': chat_id
             }
         )
         
-        # Send confirmation
+        # Формируем ответ
         deal_text = (
-            f"✅ <b>Сделка создана!</b>\n\n"
-            f"Сделка: #{deal_id}\n"
-            f"Фабрика: {proposal['factory_name']}\n"
-            f"Сумма: {format_price(total_amount)} ₽\n\n"
-            f"<b>Следующий шаг:</b>\n"
-            f"{ORDER_STATUS_DESCRIPTIONS[OrderStatus.DRAFT]}"
+            f"✅ <b>Сделка #{deal_id} создана!</b>\n\n"
+            f"📦 Заказ: {order['title']}\n"
+            f"🏭 Фабрика: {proposal['factory_name']}\n"
+            f"💰 Сумма: {format_price(total_amount)} ₽\n\n"
         )
         
+        # Добавляем информацию о чате
+        if chat_id and invite_link:
+            deal_text += "💬 Групповой чат создан!\n\n"
+        else:
+            deal_text += "⚠️ Чат будет создан позже\n\n"
+        
+        deal_text += f"<b>Следующий шаг:</b>\n{ORDER_STATUS_DESCRIPTIONS[OrderStatus.DRAFT]}"
+        
+        # Кнопки
         buttons = []
         
         if proposal['sample_cost'] > 0:
@@ -4838,28 +4802,32 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
             ])
         else:
             deal_text += f"\n\n✅ Образец бесплатный!"
+            # Если образец бесплатный, можно сразу переходить к следующему шагу
+            buttons.append([
+                InlineKeyboardButton(text="✅ Подтвердить (образец не нужен)", callback_data=f"skip_sample:{deal_id}")
+            ])
         
-        # Всегда добавляем кнопку чата
+        # Кнопка чата (всегда показываем)
         buttons.append([
             InlineKeyboardButton(text="💬 Перейти в чат", callback_data=f"deal_chat:{deal_id}")
         ])
         
         kb = InlineKeyboardMarkup(inline_keyboard=buttons)
-        
         await call.message.edit_text(deal_text, reply_markup=kb)
         
-        # Notify factory
+        # Уведомляем участников
         await send_notification(
             factory_id,
             'deal_created',
             'Ваше предложение выбрано!',
             f'Заказчик выбрал ваше предложение по заказу #Z-{order_id}\n'
-            f'Сумма сделки: {format_price(total_amount)} ₽\n\n'
-            f'Чат по сделке создан.',
-            {'deal_id': deal_id, 'order_id': order_id}
+            f'Сумма сделки: {format_price(total_amount)} ₽\n'
+            f'Создана сделка #{deal_id}\n'
+            f'{"Групповой чат создан!" if chat_id else "Чат будет создан позже"}',
+            {'deal_id': deal_id, 'order_id': order_id, 'has_chat': bool(chat_id)}
         )
         
-        # Notify other factories that didn't win
+        # Уведомляем остальные фабрики
         other_proposals = q("""
             SELECT factory_id FROM proposals 
             WHERE order_id = ? AND factory_id != ? AND is_accepted = 0
@@ -4874,16 +4842,15 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
                 {'order_id': order_id}
             )
         
-        logger.info(f"Deal {deal_id} created successfully for order {order_id}")
+        logger.info(f"✅ Deal {deal_id} created successfully for order {order_id} with chat_status: {bool(chat_id)}")
         await call.answer("✅ Сделка создана!")
         
     except ValueError as e:
-        logger.error(f"ValueError in choose_factory: {e}, callback_data: {call.data}")
+        logger.error(f"ValueError in choose_factory: {e}")
         await call.answer("❌ Неверный формат данных", show_alert=True)
-        
     except Exception as e:
-        logger.error(f"Unexpected error in choose_factory: {e}, callback_data: {call.data}")
-        await call.answer("❌ Произошла ошибка. Попробуйте позже или обратитесь в поддержку.", show_alert=True)
+        logger.error(f"Unexpected error in choose_factory: {e}")
+        await call.answer("❌ Произошла ошибка. Попробуйте позже.", show_alert=True)
 
 # Дополнительная функция для диагностики заказов (для админов)
 async def diagnose_order(order_id: int) -> str:
