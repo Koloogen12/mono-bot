@@ -6192,7 +6192,7 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
     # Проверяем доступность модуля
     if not GROUP_CREATOR_AVAILABLE:
         logger.warning("Group creator not available, using fallback notification")
-        await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Module not available")
+        await send_fallback_chat_notification(deal_id, error="Module not available")
         return None
     
     try:
@@ -6216,55 +6216,47 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         
         if not api_id:
             logger.error("TELEGRAM_API_ID not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing TELEGRAM_API_ID")
+            await send_fallback_chat_notification(deal_id, error="Missing TELEGRAM_API_ID")
             return None
             
         if not api_hash:
             logger.error("TELEGRAM_API_HASH not found in environment")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error="Missing TELEGRAM_API_HASH")
+            await send_fallback_chat_notification(deal_id, error="Missing TELEGRAM_API_HASH")
             return None
             
         
         logger.info(f"Creating real group chat for deal {deal_id}")
-        logger.info(f"Participants: buyer={buyer_id}, factory={factory_id}, admins={ADMIN_IDS}")
+        logger.info(f"Creating group chat for deal {deal_id}: title={deal['title']}, factory={deal['factory_name']}, buyer={deal['buyer_name']}")
         
         # Создаем реальную группу
         try:
-            chat_id, result = await create_deal_chat_real(
+            chat_id, status_message, invite_link = await create_deal_chat_real(
                 deal_id=deal_id,
-                buyer_id=buyer_id,
-                factory_id=factory_id,
-                admin_ids=ADMIN_IDS,
                 deal_title=deal['title'],
                 factory_name=deal['factory_name'],
                 buyer_name=deal['buyer_name']
             )
         except Exception as e:
             logger.error(f"Exception in create_deal_chat_real: {e}")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error=str(e))
+            await send_fallback_chat_notification(deal_id, error=str(e))
             return None
         
         if chat_id and isinstance(chat_id, int) and chat_id < 0:  # Реальные группы имеют отрицательный ID
             # Update deal with REAL chat_id
             run("UPDATE deals SET chat_id = ? WHERE id = ?", (chat_id, deal_id))
             logger.info(f"✅ Created REAL group chat {chat_id} for deal {deal_id}")
-            
-            # Отправляем уведомление об успешном создании
-            await notify_chat_created(deal_id, buyer_id, factory_id, chat_id)
-            
+        
+            # Отправляем уведомление об успешном создании с invite_link
+            await notify_chat_created(deal_id, chat_id, invite_link)
+        
             return chat_id
         else:
             # Группа не создалась - используем fallback
-            error_msg = result if result else "Unknown error creating group"
+            error_msg = status_message if status_message else "Unknown error creating group"
             logger.error(f"❌ Failed to create real group for deal {deal_id}: {error_msg}")
-            await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error=error_msg)
+            await send_fallback_chat_notification(deal_id, error=error_msg)
             return None
-        
-    except Exception as e:
-        logger.error(f"Exception creating deal chat for deal {deal_id}: {e}")
-        await send_fallback_chat_notification(deal_id, buyer_id, factory_id, error=str(e))
-        return None
-
+            
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
     """Handle deal chat access with improved error handling."""
