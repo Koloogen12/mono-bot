@@ -45,6 +45,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+print("Current dir:", os.getcwd())
+print("fabrique.session exists:", os.path.exists("fabrique.session"))
+
 import re
 import sqlite3
 import json
