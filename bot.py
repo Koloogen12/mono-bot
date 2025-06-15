@@ -6358,7 +6358,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
             run("UPDATE deals SET chat_id = NULL WHERE id = ?", (deal_id,))
             logger.info(f"Cleared fake chat_id {deal['chat_id']} for deal {deal_id}")
         
-        chat_id = await create_deal_chat(deal_id])
+        chat_id = await create_deal_chat(deal_id)
         
         if chat_id:
             # Получаем ссылку на созданный чат
