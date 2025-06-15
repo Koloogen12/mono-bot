@@ -156,6 +156,54 @@ dp.include_router(router)
 DB_PATH = "fabrique.db"
 DB_VERSION = 3  # Increment when schema changes
 
+# Добавьте эти команды в bot.py для диагностики:
+
+@router.message(Command("testconnection"))
+async def cmd_test_connection(msg: Message) -> None:
+    """Test Telethon connection."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    await msg.answer("🧪 Тестируем подключение к Telegram API...")
+    
+    try:
+        from chat_manager import test_connection
+        
+        success = await test_connection()
+        
+        if success:
+            await msg.answer("✅ Подключение к Telegram API работает!")
+        else:
+            await msg.answer(
+                "❌ Не удалось подключиться к Telegram API\n\n"
+                "Возможные причины:\n"
+                "• Неправильные API_ID/API_HASH\n"
+                "• Устаревший SESSION_STRING\n"
+                "• Проблемы с сетью\n"
+                "• Блокировка Telegram"
+            )
+    except Exception as e:
+        await msg.answer(f"❌ Ошибка тестирования: {e}")
+
+@router.message(Command("recreatesession"))
+async def cmd_recreate_session(msg: Message) -> None:
+    """Instructions to recreate session."""
+    if msg.from_user.id not in ADMIN_IDS:
+        return
+    
+    instructions = (
+        "🔧 <b>Инструкция по пересозданию сессии:</b>\n\n"
+        "<b>1.</b> Запустите локально:\n"
+        "<code>python create_string_session.py</code>\n\n"
+        "<b>2.</b> Введите API_ID: <code>25651355</code>\n\n"
+        "<b>3.</b> Введите API_HASH: <code>216ecff1bbd5b60a8d8734d84013f028</code>\n\n"
+        "<b>4.</b> Авторизуйтесь через Telegram\n\n"
+        "<b>5.</b> Скопируйте новый SESSION_STRING в .env\n\n"
+        "<b>6.</b> Перезапустите бота"
+    )
+    
+    await msg.answer(instructions)
+
 # ---------------------------------------------------------------------------
 #  Constants and Enums
 # ---------------------------------------------------------------------------
