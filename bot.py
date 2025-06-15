@@ -6257,7 +6257,6 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
             await send_fallback_chat_notification(deal_id, error=error_msg)
             return None
 
-
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
     """Handle deal chat access with improved error handling."""
