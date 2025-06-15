@@ -6260,11 +6260,8 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
 
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
-    
     """Handle deal chat access with improved error handling."""
     deal_id = int(call.data.split(":", 1)[1])
-    
-    # Get deal info
     deal = q1("""
         SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
         FROM deals d
