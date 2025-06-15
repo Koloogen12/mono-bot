@@ -4778,7 +4778,7 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
         
         # Create deal chat
         try:
-            chat_id = await create_deal_chat(deal_id, call.from_user.id, factory_id)
+            chat_id = await create_deal_chat(deal_id)
             if chat_id:
                 logger.info(f"Created chat {chat_id} for deal {deal_id}")
         except Exception as e:
@@ -4795,7 +4795,7 @@ async def choose_factory(call: CallbackQuery, state: FSMContext) -> None:
 
         # Create deal chat automatically
         try:
-            await create_deal_chat(deal_id, call.from_user.id, factory_id)
+            await create_deal_chat(deal_id)
         except Exception as e:
             logger.error(f"Failed to create chat for deal {deal_id}: {e}")
         
@@ -6358,7 +6358,7 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
             run("UPDATE deals SET chat_id = NULL WHERE id = ?", (deal_id,))
             logger.info(f"Cleared fake chat_id {deal['chat_id']} for deal {deal_id}")
         
-        chat_id = await create_deal_chat(deal_id, deal['buyer_id'], deal['factory_id'])
+        chat_id = await create_deal_chat(deal_id])
         
         if chat_id:
             # Получаем ссылку на созданный чат
