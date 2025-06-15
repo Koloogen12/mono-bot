@@ -6185,7 +6185,6 @@ async def edit_factory_from_creation(call: CallbackQuery, state: FSMContext) -> 
 # ---------------------------------------------------------------------------
 #  ДОРАБОТКА: Обработчики для просмотра и создания чатов
 # ---------------------------------------------------------------------------
-
 async def create_deal_chat(deal_id: int) -> tuple[int | None, str | None]:
     """Create group chat for deal with improved error handling."""
     if not GROUP_CREATOR_AVAILABLE:
@@ -6236,6 +6235,10 @@ async def create_deal_chat(deal_id: int) -> tuple[int | None, str | None]:
             logger.error(f"❌ Failed to create real group for deal {deal_id}: {error_msg}")
             await send_fallback_chat_notification(deal_id, error=error_msg)
             return None, None
+    except Exception as e:
+        logger.error(f"Unexpected exception in create_deal_chat: {e}")
+        await send_fallback_chat_notification(deal_id, error=str(e))
+        return None, None
 
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
