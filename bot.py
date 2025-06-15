@@ -6186,17 +6186,13 @@ async def edit_factory_from_creation(call: CallbackQuery, state: FSMContext) -> 
 #  ДОРАБОТКА: Обработчики для просмотра и создания чатов
 # ---------------------------------------------------------------------------
 
-async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int | None:
+async def create_deal_chat(deal_id: int) -> tuple[int | None, str | None]:
     """Create group chat for deal with improved error handling."""
-    
-    # Проверяем доступность модуля
     if not GROUP_CREATOR_AVAILABLE:
         logger.warning("Group creator not available, using fallback notification")
         await send_fallback_chat_notification(deal_id, error="Module not available")
-        return None
-    
+        return None, None
     try:
-        # Get deal info
         deal = q1("""
             SELECT d.*, o.title, f.name as factory_name, u.full_name as buyer_name
             FROM deals d
@@ -6205,30 +6201,20 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
             JOIN users u ON d.buyer_id = u.tg_id
             WHERE d.id = ?
         """, (deal_id,))
-        
         if not deal:
             logger.error(f"Deal {deal_id} not found for chat creation")
-            return None
-        
-        # Проверяем переменные окружения
+            return None, None
         api_id = os.getenv("TELEGRAM_API_ID")
         api_hash = os.getenv("TELEGRAM_API_HASH")
-        
         if not api_id:
             logger.error("TELEGRAM_API_ID not found in environment")
             await send_fallback_chat_notification(deal_id, error="Missing TELEGRAM_API_ID")
-            return None
-            
+            return None, None
         if not api_hash:
             logger.error("TELEGRAM_API_HASH not found in environment")
             await send_fallback_chat_notification(deal_id, error="Missing TELEGRAM_API_HASH")
-            return None
-            
-        
-        logger.info(f"Creating real group chat for deal {deal_id}")
+            return None, None
         logger.info(f"Creating group chat for deal {deal_id}: title={deal['title']}, factory={deal['factory_name']}, buyer={deal['buyer_name']}")
-        
-        # Создаем реальную группу
         try:
             chat_id, status_message, invite_link = await create_deal_chat_real(
                 deal_id=deal_id,
@@ -6239,23 +6225,17 @@ async def create_deal_chat(deal_id: int, buyer_id: int, factory_id: int) -> int 
         except Exception as e:
             logger.error(f"Exception in create_deal_chat_real: {e}")
             await send_fallback_chat_notification(deal_id, error=str(e))
-            return None
-        
-        if chat_id and isinstance(chat_id, int) and chat_id < 0:  # Реальные группы имеют отрицательный ID
-            # Update deal with REAL chat_id
+            return None, None
+        if chat_id and isinstance(chat_id, int) and chat_id < 0:
             run("UPDATE deals SET chat_id = ? WHERE id = ?", (chat_id, deal_id))
             logger.info(f"✅ Created REAL group chat {chat_id} for deal {deal_id}")
-        
-            # Отправляем уведомление об успешном создании с invite_link
             await notify_chat_created(deal_id, chat_id, invite_link)
-        
-            return chat_id
+            return chat_id, invite_link
         else:
-            # Группа не создалась - используем fallback
             error_msg = status_message if status_message else "Unknown error creating group"
             logger.error(f"❌ Failed to create real group for deal {deal_id}: {error_msg}")
             await send_fallback_chat_notification(deal_id, error=error_msg)
-            return None
+            return None, None
 
 @router.callback_query(F.data.startswith("deal_chat:"))
 async def deal_chat_handler(call: CallbackQuery) -> None:
@@ -6269,7 +6249,6 @@ async def deal_chat_handler(call: CallbackQuery) -> None:
         JOIN users u ON d.buyer_id = u.tg_id
         WHERE d.id = ? AND (d.buyer_id = ? OR d.factory_id = ?)
     """, (deal_id, call.from_user.id, call.from_user.id))
-    
     if not deal:
         await call.answer("Сделка не найдена", show_alert=True)
         return
