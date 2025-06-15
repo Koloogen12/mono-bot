@@ -1,7 +1,26 @@
 services:
-  - type: worker
+  - type: web
     name: mono-fabrique-bot
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
     startCommand: "python bot.py"
+    healthCheckPath: "/health"
+    envVars:
+      - key: BOT_MODE
+        value: WEBHOOK
+      - key: PORT
+        value: 10000
+      - key: WEBHOOK_BASE
+        fromService:
+          type: web
+          name: mono-fabrique-bot
+          property: host
+    # Дополнительные настройки для стабильности
+    autoDeploy: false
+    buildFilter:
+      paths:
+      - bot.py
+      - chat_manager.py
+      - requirements.txt
+      - render.yaml
